@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en" data-build="pwa">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; manifest-src 'self'; worker-src 'self'; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="description" content="Deposits, returns and an S&amp;P 500 comparison, read from your own Excel file.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Investments">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#EBEFEA" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0B1316" media="(prefers-color-scheme: dark)">
+<title>Investment Tracker</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-mode="welcome">
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+        <g fill="none" stroke="currentColor" stroke-width="0.9">
+          <ellipse cx="20" cy="20" rx="17" ry="6.5"/>
+          <ellipse cx="20" cy="20" rx="17" ry="6.5" transform="rotate(30 20 20)"/>
+          <ellipse cx="20" cy="20" rx="17" ry="6.5" transform="rotate(60 20 20)"/>
+          <ellipse cx="20" cy="20" rx="17" ry="6.5" transform="rotate(90 20 20)"/>
+          <ellipse cx="20" cy="20" rx="17" ry="6.5" transform="rotate(120 20 20)"/>
+          <ellipse cx="20" cy="20" rx="17" ry="6.5" transform="rotate(150 20 20)"/>
+          <circle cx="20" cy="20" r="18.5"/>
+        </g>
+        <circle cx="20" cy="20" r="2.6" fill="currentColor"/>
+      </svg>
+      <div>
+        <h1>Investment Tracker</h1>
+        <p class="file-status" id="file-status" role="status">No file open</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button class="btn" type="button" data-action="open-file" aria-label="Open Excel file">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg>
+        <span class="label">Open</span>
+      </button>
+      <button class="btn" type="button" data-action="save" id="btn-save" aria-label="Save to Excel" disabled>
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15"/></svg>
+        <span class="label">Save</span>
+      </button>
+      <button class="icon-btn" type="button" data-action="settings" aria-label="File and privacy settings" title="File and privacy">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <nav class="tabbar" role="tablist" aria-label="Sections">
+    <button type="button" role="tab" id="tabbtn-overview" aria-controls="view-overview" aria-selected="true" data-tab="overview">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16"/><path d="M5 16l4.5-4.5 3.5 3L19 8"/><path d="M15 8h4v4"/></svg>
+      <span>Overview</span>
+    </button>
+    <button type="button" role="tab" id="tabbtn-deposits" aria-controls="view-deposits" aria-selected="false" data-tab="deposits" tabindex="-1">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h11M4 12h11M4 17h7"/><path d="M18 14v7M14.5 17.5h7"/></svg>
+      <span>Deposits</span>
+    </button>
+  </nav>
+
+  <div id="banner" class="banner" role="status" hidden></div>
+
+  <main>
+    <section id="view-overview" class="view" role="tabpanel" aria-labelledby="tabbtn-overview">
+      <div id="welcome" class="card welcome">
+        <h2>Open your investment file</h2>
+        <p class="lead">Pick your Excel file from the Files app. The app reads your deposits and value right here on this device and works out your returns.</p>
+        <div class="actions">
+          <button class="btn btn-primary" type="button" data-action="open-file">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg>
+            Open Excel file
+          </button>
+          <div class="row-actions">
+            <button class="btn" type="button" data-action="new-tracker">New tracker</button>
+            <button class="btn" type="button" data-action="show-example">Try an example</button>
+          </div>
+        </div>
+        <ul class="assure">
+          <li>
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5c0 4.6-3 8.3-7 10-4-1.7-7-5.4-7-10V6z"/></svg>
+            <span class="pwa-only"><strong>Nothing leaves this device.</strong> There’s no server or account, and the page is locked so it can’t send data over the internet.</span>
+            <span class="artifact-only"><strong>Nothing is uploaded.</strong> Your file is read inside this page, which can’t reach other websites and doesn’t store anything in your Claude account.</span>
+          </li>
+          <li>
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4 4L19 7"/></svg>
+            <span><strong>Your Excel file stays the only copy.</strong> Tap Save to write your changes back to it.</span>
+          </li>
+          <li class="pwa-only">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4 4L19 7"/></svg>
+            <span><strong>Works offline</strong> once it’s on your Home Screen.</span>
+          </li>
+        </ul>
+      </div>
+
+      <div id="dashboard" class="dash" hidden>
+        <section id="hero" class="card hero span-2" aria-labelledby="hero-label">
+          <div class="hero-top">
+            <canvas id="guilloche" aria-hidden="true"></canvas>
+            <p class="eyebrow" id="hero-label">Portfolio value</p>
+            <p class="hero-value" id="hero-value">—</p>
+            <p class="hero-meta" id="hero-asof"></p>
+            <div class="hero-chips" id="hero-chips"></div>
+          </div>
+          <form id="value-form" class="value-form" novalidate>
+            <div class="value-row">
+              <label class="field" for="val-amount"><span class="field-label">Update the value</span>
+                <span class="money"><span class="cur" data-cur>$</span><input type="text" id="val-amount" inputmode="decimal" autocomplete="off" placeholder="25,000"></span>
+              </label>
+              <label class="field" for="val-date"><span class="field-label">As of</span>
+                <input type="date" id="val-date">
+              </label>
+              <button class="btn btn-primary" type="submit" id="val-submit">Update</button>
+            </div>
+            <p class="field-error" id="val-error" role="alert"></p>
+            <p class="note" id="val-hint"></p>
+            <p class="warn-note" id="val-warn" hidden></p>
+            <div id="val-history-wrap" hidden>
+              <button type="button" class="link" id="val-history-toggle" data-action="toggle-history" aria-expanded="false" aria-controls="val-history">Value history</button>
+              <ul class="hist" id="val-history" hidden></ul>
+            </div>
+          </form>
+        </section>
+
+        <section id="kpis" class="card kpis span-2" aria-label="Key figures"></section>
+
+        <section id="growth" class="card span-2" aria-labelledby="growth-title">
+          <div class="card-head"><h2 id="growth-title">Deposits and value over time</h2></div>
+          <ul class="legend" id="growth-legend"></ul>
+          <div class="chart" id="growth-chart"></div>
+          <details class="table-view" id="growth-tv">
+            <summary>Show as a table</summary>
+            <div class="table-scroll" id="growth-table"></div>
+          </details>
+        </section>
+
+        <section id="benchmark" class="card" aria-labelledby="bm-title">
+          <div class="card-head"><h2 id="bm-title">Against the S&amp;P&nbsp;500</h2></div>
+          <div id="bm-body"></div>
+          <form id="spx-form" class="spx-form" hidden novalidate>
+            <p class="note">Type a newer S&amp;P 500 closing level to bring the comparison up to date.</p>
+            <div class="row2">
+              <label class="field" for="spx-date"><span class="field-label">Close date</span><input type="date" id="spx-date"></label>
+              <label class="field" for="spx-level"><span class="field-label">S&amp;P 500 level</span><input type="text" id="spx-level" inputmode="decimal" autocomplete="off" placeholder="7,400"></label>
+            </div>
+            <p class="field-error" id="spx-error" role="alert"></p>
+            <div class="btn-row">
+              <button class="btn btn-sm btn-primary" type="submit">Save level</button>
+              <button class="btn btn-sm" type="button" data-action="cancel-spx">Cancel</button>
+              <button class="btn btn-sm" type="button" data-action="clear-spx" id="spx-clear" hidden>Remove my update</button>
+            </div>
+          </form>
+        </section>
+
+        <section id="years" class="card" aria-labelledby="years-title">
+          <div class="card-head"><h2 id="years-title">Deposits by year</h2></div>
+          <ul class="legend" id="years-legend"></ul>
+          <div class="chart" id="years-chart"></div>
+          <div class="table-scroll">
+            <table class="num-table" id="years-table">
+              <thead><tr><th scope="col">Year</th><th scope="col">Deposited</th><th scope="col">Entries</th><th scope="col">Cumulative</th></tr></thead>
+              <tbody id="years-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="projection" class="card span-2" aria-labelledby="proj-title">
+          <div class="card-head"><h2 id="proj-title">Looking ahead</h2></div>
+          <div class="proj-grid">
+            <div class="range-field">
+              <div class="range-top"><label for="p-years" class="field-label">Years from now</label><output id="p-years-out" for="p-years">10 years</output></div>
+              <input type="range" id="p-years" min="1" max="40" step="1" value="10">
+            </div>
+            <label class="field" for="p-annual"><span class="field-label">Deposits per year</span>
+              <span class="money"><span class="cur" data-cur>$</span><input type="text" id="p-annual" inputmode="decimal" autocomplete="off"></span>
+            </label>
+            <div class="range-field">
+              <div class="range-top"><label for="p-rate" class="field-label">Return per year</label><output id="p-rate-out" for="p-rate">7%</output></div>
+              <input type="range" id="p-rate" min="0" max="15" step="0.5" value="7">
+              <div class="presets" id="p-presets"></div>
+            </div>
+          </div>
+          <p class="proj-result" id="proj-result"></p>
+          <p class="proj-break" id="proj-break"></p>
+          <ul class="legend" id="proj-legend"></ul>
+          <div class="chart" id="proj-chart"></div>
+          <p class="fine">An illustration, not a forecast: it assumes the same return every year and equal monthly deposits.</p>
+        </section>
+      </div>
+    </section>
+
+    <section id="view-deposits" class="view" role="tabpanel" aria-labelledby="tabbtn-deposits" hidden>
+      <section id="entry" class="card" aria-labelledby="entry-title">
+        <div class="card-head"><h2 id="entry-title">Add a deposit</h2></div>
+        <form id="add-form" class="stack" novalidate>
+          <div class="seg" role="radiogroup" aria-label="Entry type">
+            <button type="button" role="radio" aria-checked="true" data-kind="dep" id="kind-dep">Deposit</button>
+            <button type="button" role="radio" aria-checked="false" data-kind="wd" id="kind-wd">Withdrawal</button>
+          </div>
+          <div class="row2">
+            <label class="field" for="add-date"><span class="field-label">Date</span><input type="date" id="add-date" required></label>
+            <label class="field" for="add-amount"><span class="field-label">Amount</span>
+              <span class="money"><span class="cur" data-cur>$</span><input type="text" id="add-amount" inputmode="decimal" autocomplete="off" placeholder="500" required></span>
+            </label>
+          </div>
+          <p class="field-error" id="add-error" role="alert"></p>
+          <button class="btn btn-primary btn-block" type="submit" id="add-submit">Add deposit</button>
+          <p class="note">Have a list already? <button type="button" class="link" data-action="open-import">Add many at once</button> by pasting from Excel or setting up a monthly amount.</p>
+        </form>
+      </section>
+
+      <section id="ledger" class="card" aria-labelledby="ledger-title">
+        <div class="card-head">
+          <h2 id="ledger-title">Deposit ledger</h2>
+          <button class="btn btn-sm" type="button" data-action="open-import">Add many</button>
+        </div>
+        <div id="ledger-list" class="ledger-list"></div>
+      </section>
+    </section>
+  </main>
+</div>
+
+<dialog id="dlg-import" class="sheet" aria-labelledby="imp-title">
+  <form method="dialog" class="dlg-form" id="imp-form" novalidate>
+    <div class="dlg-head">
+      <h2 id="imp-title">Add many deposits</h2>
+      <button class="icon-btn" value="cancel" formnovalidate aria-label="Close">
+        <svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>
+      </button>
+    </div>
+    <div class="tabs" role="tablist" aria-label="How to add" id="imp-tabs">
+      <button type="button" role="tab" id="tab-paste" aria-selected="true" aria-controls="panel-paste" data-tab="paste">Paste from Excel</button>
+      <button type="button" role="tab" id="tab-file" aria-selected="false" aria-controls="panel-file" data-tab="file">From a file</button>
+      <button type="button" role="tab" id="tab-recurring" aria-selected="false" aria-controls="panel-recurring" data-tab="recurring">Recurring</button>
+    </div>
+    <div class="dlg-body">
+      <div class="panel" id="panel-paste" role="tabpanel" aria-labelledby="tab-paste">
+        <label class="field" for="imp-text"><span class="field-label">In Excel, select your date and amount columns, copy them, then paste here.</span>
+          <textarea id="imp-text" spellcheck="false" placeholder="Date&#9;Amount&#10;15/01/2024&#9;500&#10;15/02/2024&#9;500&#10;20/03/2024&#9;1,250"></textarea>
+        </label>
+      </div>
+      <div class="panel" id="panel-file" role="tabpanel" aria-labelledby="tab-file" hidden>
+        <label class="drop" for="imp-file" id="imp-drop">
+          <input type="file" id="imp-file" accept=".xlsx,.xlsm,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv">
+          <strong>Choose a file</strong>
+          <span>Excel (.xlsx) or CSV. The deposits in it are added to your ledger.</span>
+        </label>
+        <p class="note" id="imp-file-status"></p>
+        <div class="imp-value" id="imp-value" hidden>
+          <h3>Current portfolio value</h3>
+          <p class="note" id="imp-value-note"></p>
+          <div class="row2">
+            <label class="field" for="imp-val-amount"><span class="field-label">Value</span>
+              <span class="money"><span class="cur" data-cur>$</span><input type="text" id="imp-val-amount" inputmode="decimal" autocomplete="off" placeholder="25,000"></span>
+            </label>
+            <label class="field" for="imp-val-date"><span class="field-label">As of</span><input type="date" id="imp-val-date"></label>
+          </div>
+          <p class="field-error" id="imp-val-error" role="alert"></p>
+        </div>
+      </div>
+      <div class="panel" id="panel-recurring" role="tabpanel" aria-labelledby="tab-recurring" hidden>
+        <div class="stack">
+          <p class="note">For automatic investing: add the same amount on a schedule.</p>
+          <div class="row2">
+            <label class="field" for="rc-amount"><span class="field-label">Amount each time</span>
+              <span class="money"><span class="cur" data-cur>$</span><input type="text" id="rc-amount" inputmode="decimal" autocomplete="off" placeholder="500"></span>
+            </label>
+            <label class="field" for="rc-freq"><span class="field-label">How often</span>
+              <select id="rc-freq">
+                <option value="weekly">Every week</option>
+                <option value="biweekly">Every 2 weeks</option>
+                <option value="monthly" selected>Every month</option>
+                <option value="quarterly">Every 3 months</option>
+                <option value="yearly">Every year</option>
+              </select>
+            </label>
+          </div>
+          <div class="row2">
+            <label class="field" for="rc-start"><span class="field-label">First deposit</span><input type="date" id="rc-start"></label>
+            <label class="field" for="rc-end"><span class="field-label">Last one on or before</span><input type="date" id="rc-end"></label>
+          </div>
+        </div>
+      </div>
+      <div class="preview" id="imp-preview" aria-live="polite"></div>
+    </div>
+    <div class="dlg-foot">
+      <label class="check grow" id="imp-replace-wrap"><input type="checkbox" id="imp-replace"> Replace my existing deposits</label>
+      <button class="btn btn-primary" type="button" id="imp-go" disabled>Add deposits</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-settings" class="sheet" aria-labelledby="set-title">
+  <form method="dialog" class="dlg-form">
+    <div class="dlg-head">
+      <h2 id="set-title">File &amp; privacy</h2>
+      <button class="icon-btn" value="cancel" formnovalidate aria-label="Close">
+        <svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>
+      </button>
+    </div>
+    <div class="dlg-body">
+      <div class="set-section">
+        <h3>Your file</h3>
+        <p class="set-file" id="set-file"></p>
+        <div class="btn-row">
+          <button class="btn btn-sm" type="button" data-action="open-file">Open a file</button>
+          <button class="btn btn-sm btn-primary" type="button" data-action="save" id="set-save">Save to Excel</button>
+          <button class="btn btn-sm" type="button" data-action="close-file" id="set-close">Close file</button>
+        </div>
+        <p class="note pwa-only">On iPhone, Save opens the share sheet. Choose Save to Files, pick the folder your file is in, and tap Replace. Keep the file in On My iPhone if you don’t want it synced to iCloud.</p>
+      </div>
+      <div class="set-section">
+        <label class="field" for="set-cur"><span class="field-label">Currency</span><select id="set-cur"></select></label>
+      </div>
+      <div class="set-section">
+        <label class="switch" for="set-keep"><span class="switch-label">Keep a copy on this device</span><input type="checkbox" id="set-keep" role="switch"><span class="track" aria-hidden="true"></span></label>
+        <p class="note" id="set-keep-note"></p>
+      </div>
+      <div class="set-section">
+        <h3>Privacy</h3>
+        <ul class="privacy">
+          <li>No account, no server, no analytics, and no code from other websites.</li>
+          <li class="pwa-only">A security policy built into the page blocks every network request, so it can’t send your numbers anywhere.</li>
+          <li class="artifact-only">Inside the Claude app this page can’t reach other websites, and it stores nothing in your Claude account.</li>
+          <li>Your numbers are read from your Excel file and written back only when you tap Save.</li>
+        </ul>
+      </div>
+      <div class="set-section">
+        <h3>S&amp;P 500 data</h3>
+        <p class="note" id="set-spx"></p>
+      </div>
+      <div class="set-section">
+        <div><button class="btn btn-sm btn-danger" type="button" data-action="erase-all">Erase everything from this app</button></div>
+        <p class="note">Clears the app. Your Excel file isn’t touched.</p>
+      </div>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-confirm" class="small" aria-labelledby="cf-title">
+  <form method="dialog" class="dlg-form">
+    <div class="dlg-head"><h2 id="cf-title">Are you sure?</h2></div>
+    <div class="dlg-body"><p id="cf-body"></p></div>
+    <div class="dlg-foot end">
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn btn-primary" value="ok" id="cf-ok">Confirm</button>
+    </div>
+  </form>
+</dialog>
+
+<input type="file" id="open-file" class="sr-only" tabindex="-1" aria-hidden="true" accept=".xlsx,.xlsm,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv">
+<div class="toast" id="toast" role="status" aria-live="polite"><span class="toast-msg" id="toast-msg"></span><button type="button" id="toast-undo" data-action="undo" hidden>Undo</button></div>
+<noscript><p>This tracker needs JavaScript turned on.</p></noscript>
+<script src="spx-data.js" defer></script>
+<script src="calc.js" defer></script>
+<script src="xlsx.js" defer></script>
+<script src="app.js" defer></script>
+</body>
+</html>
