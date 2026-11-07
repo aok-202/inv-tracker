@@ -15,7 +15,9 @@ yearly rate stored in spx-data.js (div). Month ends are recorded once a month is
 import calendar, csv, datetime as dt, io, json, re, sys, urllib.request
 from pathlib import Path
 
-DATA = Path(__file__).resolve().parent.parent / 'spx-data.js'
+HERE = Path(__file__).resolve().parent
+# next to this script (the usual place), or one folder up if it lives in scripts/
+DATA = HERE / 'spx-data.js' if (HERE / 'spx-data.js').exists() else HERE.parent / 'spx-data.js'
 FRED = 'https://fred.stlouisfed.org/graph/fredgraph.csv?id=SP500'
 YAHOO = 'https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?range=1mo&interval=1d'
 HEADERS = {'User-Agent': 'Mozilla/5.0 (compatible; investment-tracker data refresh)'}

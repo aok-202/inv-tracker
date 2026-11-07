@@ -319,7 +319,11 @@ function dateParts(raw) {
   s = s.replace(/(?:[T\s]+|\s*,\s*)\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\s*(?:[ap]\.?m\.?)?\s*(?:z|utc|gmt|[+-]\d{2}:?\d{2})?$/i, '');
   let m;
   if ((m = /^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})\.?$/.exec(s))) return { kind: 'iso', y: +m[1], m: +m[2], d: +m[3] };
-  if ((m = /^(\d{4})(\d{2})(\d{2})$/.exec(s))) return { kind: 'iso', y: +m[1], m: +m[2], d: +m[3] };
+  /* 20231201, as broker exports write dates. Only a real date counts, so a large amount like 12345678 stays a number. */
+  if ((m = /^(\d{4})(\d{2})(\d{2})$/.exec(s))) {
+    const y = +m[1], mo = +m[2], d = +m[3];
+    return y >= 1900 && y <= 2100 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31 ? { kind: 'iso', y, m: mo, d } : null;
+  }
   if ((m = /^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4}|\d{2})\.?$/.exec(s))) return { kind: 'num', a: +m[1], b: +m[2], y: fixYear(m[3]) };
   if ((m = /^(\d{1,2})(?:st|nd|rd|th)?[\s\-\/.]*([a-z]{3,10})\.?[\s\-\/.,]*(\d{4}|\d{2})$/i.exec(s))) {
     const mo = monthFromName(m[2]); if (mo) return { kind: 'name', y: fixYear(m[3]), m: mo, d: +m[1] };
@@ -406,9 +410,109 @@ function wsSplit(line) {
 }
 const isBlank = c => c == null || (typeof c === 'string' && c.trim() === '');
 
+/* ---- broker exports in sections, like Interactive Brokers' CSV reports ----
+   Every line starts with a section name and a row kind, then the fields:
+     Allocation by Asset Class,Header,Date,Equities,Cash,NAV
+     Allocation by Asset Class,Data,202312,9500.00,250.00,9750.00
+   Only Header and Data rows are read; other kinds (MetaInfo, Total, Notes) are left alone. */
+const monthEndIso = (y, m) => dayToIso(Math.round(Date.UTC(y, m, 0) / DAY_MS));
+/* A period label made into a date: 202312 is the last day of December 2023, 2023Q4 is 31 Dec 2023,
+   20231229 is that day. A month or quarter that hasn't ended yet is dated `cap` (the report's end, or today). */
+function periodIso(raw, cap) {
+  const s = typeof raw === 'number' ? String(raw) : String(raw == null ? '' : raw).trim();
+  let m, iso = null;
+  const okY = y => y >= 1900 && y <= 2100;
+  if ((m = /^(\d{4})(\d{2})(\d{2})$/.exec(s)) && okY(+m[1])) return ymdToIso(+m[1], +m[2], +m[3]);
+  if (((m = /^(\d{4})(\d{2})$/.exec(s)) || (m = /^(\d{4})[-\/.](\d{1,2})$/.exec(s))) && okY(+m[1]) && +m[2] >= 1 && +m[2] <= 12) iso = monthEndIso(+m[1], +m[2]);
+  else if ((m = /^(\d{4})\s*[-\s]?\s*q([1-4])$/i.exec(s)) && okY(+m[1])) iso = monthEndIso(+m[1], +m[2] * 3);
+  else if ((m = /^q([1-4])\s*[-\s]?\s*(\d{4})$/i.exec(s)) && okY(+m[2])) iso = monthEndIso(+m[2], +m[1] * 3);
+  else return null;
+  return cap && iso > cap ? cap : iso;
+}
+const NAV_NAMES = [/^(total )?nav( in base currency)?$/i, /^(net asset value|ending nav|end(ing)? value|total value|portfolio value|account value)$/i, /^(total|value|net liquidation( value)?|balance|market value)$/i];
+const AMOUNT_NAMES = [/^(amount|net amount|amount in base( currency)?)$/i, /^(deposits?|deposits? ?(and|&) ?withdrawals?|net deposits?)$/i];
+function brokerTable(rows, want, today) {
+  const kindOf = r => (r.length >= 3 ? String(r[1] == null ? '' : r[1]).trim().toLowerCase() : '');
+  let marked = 0;
+  for (const r of rows) if (kindOf(r) === 'header' || kindOf(r) === 'data') marked++;
+  if (marked < 2 || marked < rows.length * 0.5) return null;
+  /* each Header row starts a table; Data rows belong to the latest table of their section */
+  const tables = [], latest = new Map();
+  for (const r of rows) {
+    const k = kindOf(r), name = String(r[0] == null ? '' : r[0]).trim();
+    if (k === 'header') { const t = { section: name, header: r.slice(2).map(c => (c == null ? '' : String(c).trim())), data: [] }; tables.push(t); latest.set(name, t); }
+    else if (k === 'data') {
+      let t = latest.get(name);
+      if (!t) { t = { section: name, header: null, data: [] }; tables.push(t); latest.set(name, t); }
+      t.data.push(r.slice(2));
+    }
+  }
+  /* the report's end date, when the export says it ("January 1, 2023 - November 6, 2026") */
+  let periodEnd = null;
+  const rangeRe = /(\d{8}|\d{4}-\d{2}-\d{2}|[a-z]{3,9}\.? \d{1,2},? \d{4})\s*(?:-|–|—|to)\s*(\d{8}|\d{4}-\d{2}-\d{2}|[a-z]{3,9}\.? \d{1,2},? \d{4})/i;
+  for (const r of rows) {
+    for (const c of r) {
+      const m = typeof c === 'string' ? rangeRe.exec(c) : null;
+      if (!m) continue;
+      const iso = resolveDate(dateParts(m[2]), 'mdy');
+      if (iso && iso <= today && (!periodEnd || iso > periodEnd)) periodEnd = iso;
+    }
+  }
+  const cap = periodEnd && periodEnd < today ? periodEnd : today;
+  const names = want === 'values' ? NAV_NAMES : AMOUNT_NAMES;
+  const prefer = want === 'values' ? /allocation by asset class/i : /deposit|withdraw/i;
+  let best = null, bestScore = -1;
+  for (const t of tables) {
+    if (!t.data.length) continue;
+    /* deposits only ever come from a deposits section, so dividends or fees are never read as deposits */
+    if (want !== 'values' && !/deposit|withdraw|transfer/i.test(t.section)) continue;
+    let dateCol = -1, valCol = -1, level = 9;
+    if (t.header) {
+      dateCol = t.header.findIndex(h => /^date$/i.test(h));
+      if (dateCol < 0) dateCol = t.header.findIndex(h => /date|period|month/i.test(h));
+      names.forEach((re, lv) => { if (level > lv) { const i = t.header.findIndex((h, j) => j !== dateCol && re.test(h)); if (i >= 0) { valCol = i; level = lv; } } });
+      /* plain names like Total or Value only count in a section about holdings, not, say, returns */
+      if (want === 'values' && level === 2 && !/allocation|nav|net asset|value|balance|account/i.test(t.section)) valCol = -1;
+    } else if (want === 'values' && prefer.test(t.section)) {
+      dateCol = 0; valCol = t.data.reduce((n, r) => Math.max(n, r.length), 0) - 1; level = 5;
+    }
+    if (dateCol < 0 || valCol < 0 || valCol === dateCol) continue;
+    const score = (prefer.test(t.section) ? 1000 : 0) + (9 - level) * 100 + Math.min(99, t.data.length);
+    if (score > bestScore) { bestScore = score; best = { t, dateCol, valCol }; }
+  }
+  const sections = [...new Set(tables.map(t => t.section))];
+  if (!best) return { problem: 'broker', sections };
+  let months = 0, quarters = 0, capped = 0;
+  const out = best.t.data.map(r => {
+    const row = r.slice(), raw = String(row[best.dateCol] == null ? '' : row[best.dateCol]).trim();
+    const iso = periodIso(raw, cap);
+    if (iso) {
+      if (/q/i.test(raw)) quarters++; else if (!/^\d{8}$/.test(raw)) months++;
+      if (iso === cap && periodIso(raw, null) !== cap) capped++;
+      row[best.dateCol] = iso;
+    }
+    return row;
+  });
+  if (best.t.header) out.unshift(best.t.header);
+  const kind = quarters > months ? 'quarter' : months ? 'month' : null;
+  return { rows: out, dateCol: best.dateCol, valCol: best.valCol, section: best.t.section, sections, kind, capped, cap };
+}
+
 function analyzeRows(rows, opts) {
   opts = opts || {};
   rows = (rows || []).filter(r => Array.isArray(r) && r.some(c => !isBlank(c)));
+  if (!opts.plain) {
+    const today = opts.today || dayToIso(Math.floor(Date.now() / DAY_MS));
+    const bt = brokerTable(rows, opts.want === 'values' ? 'values' : 'deposits', today);
+    if (bt && bt.problem) {
+      return { problem: 'broker', broker: { sections: bt.sections }, items: [], errors: [], skipped: 0, ncol: 0, rowsUsed: rows.length, header: null, dateCol: -1, amountCol: -1 };
+    }
+    if (bt) {
+      const res = analyzeRows(bt.rows, Object.assign({}, opts, { plain: true, preferAmountCol: bt.valCol, preferDateCol: bt.dateCol }));
+      res.broker = { section: bt.section, sections: bt.sections, kind: bt.kind, capped: bt.capped, cap: bt.cap };
+      return res;
+    }
+  }
   const ncol = rows.reduce((n, r) => Math.max(n, r.length), 0);
   const res = { rowsUsed: rows.length, ncol, items: [], errors: [], skipped: 0, header: null, dateCol: -1, amountCol: -1, firstRow: rows[0] || null };
   if (!rows.length || !ncol) { res.problem = 'empty'; return res; }
@@ -427,6 +531,10 @@ function analyzeRows(rows, opts) {
   }
   res.stats = stats;
   let dateCol = Number.isInteger(opts.dateCol) && opts.dateCol >= 0 && opts.dateCol < ncol ? opts.dateCol : -1;
+  if (dateCol < 0 && Number.isInteger(opts.preferDateCol) && opts.preferDateCol < ncol) {
+    const s = stats[opts.preferDateCol];
+    if (s && s.dates > 0 && s.dates >= s.ne * 0.5) dateCol = opts.preferDateCol;
+  }
   if (dateCol < 0) {
     let best = 0;
     stats.forEach((s, c) => { if (s.dates > best && s.dates >= s.ne * 0.5) { best = s.dates; dateCol = c; } });
@@ -435,6 +543,12 @@ function analyzeRows(rows, opts) {
     stats.forEach((s, c) => { if (dateCol < 0 && s.serial >= 1 && s.serial >= s.ne * 0.6 && s.serial >= s.nums * 0.8) dateCol = c; });
   }
   const serialMode = dateCol >= 0 && stats[dateCol].dates === 0 && stats[dateCol].serial > 0;
+  /* a heading row that names the column (NAV for values, Amount for deposits) decides between number columns */
+  if (!Number.isInteger(opts.preferAmountCol) && dateCol >= 0 && typeof rows[0][dateCol] === 'string' && !dateParts(rows[0][dateCol])) {
+    const hdr = rows[0].map(c => (c == null ? '' : String(c).trim()));
+    const names = opts.want === 'values' ? NAV_NAMES : AMOUNT_NAMES;
+    for (const re of names) { const i = hdr.findIndex((x, j) => j !== dateCol && re.test(x)); if (i >= 0) { opts = Object.assign({}, opts, { preferAmountCol: i }); break; } }
+  }
   let amountCol = Number.isInteger(opts.amountCol) && opts.amountCol >= 0 && opts.amountCol < ncol && opts.amountCol !== dateCol ? opts.amountCol : -1;
   if (amountCol < 0 && dateCol >= 0) {
     /* Count numbers only on rows that have a date, so totals or notes beside the table don't win. Ties go to the column nearest the dates. */
@@ -445,6 +559,7 @@ function analyzeRows(rows, opts) {
       return isFinite(n) && Number.isInteger(n) && n >= 25000 && n <= 60000;
     });
     let best = 0, bestDist = Infinity;
+    const counts = [];
     for (let c = 0; c < ncol; c++) {
       if (c === dateCol) continue;
       let n = 0;
@@ -454,9 +569,13 @@ function analyzeRows(rows, opts) {
         const x = typeof v === 'number' ? v : (dateParts(v) ? NaN : parseAmount(v, null));
         if (isFinite(x)) n++;
       }
+      counts[c] = n;
       const dist = Math.abs(c - dateCol);
       if (n > best || (n === best && n > 0 && dist < bestDist)) { best = n; bestDist = dist; amountCol = c; }
     }
+    /* a column named for what we want (NAV in a broker export) beats the nearest one */
+    const pc = opts.preferAmountCol;
+    if (Number.isInteger(pc) && pc !== dateCol && (counts[pc] || 0) >= Math.max(1, dateRows.length * 0.3)) { amountCol = pc; best = counts[pc]; }
     if (best < Math.max(1, dateRows.length * 0.3)) amountCol = -1;
   }
   res.dateCol = dateCol; res.amountCol = amountCol; res.serialMode = serialMode;
@@ -509,6 +628,78 @@ function analyzeRows(rows, opts) {
   return res;
 }
 
+/* How imported portfolio values join the saved ones, one value per date.
+   A dense list, like a broker's daily values, is thinned to the last value of each month or week
+   (keep: 'month', 'week' or 'all'), always keeping its first and latest values. A dense list then
+   stands for its whole period: saved values inside that period give way to it, so importing a
+   longer export later replaces the earlier one instead of piling up extra points. */
+function planValues(items, saved, keep) {
+  const out = { neg: [], twice: [], found: 0, dense: false, kept: [], removed: [], range: null, nNew: 0, nRepl: 0, nSame: 0 };
+  const lastIdx = new Map();
+  items.forEach((it, i) => lastIdx.set(it.d, i));
+  const valid = [];
+  items.forEach((it, i) => {
+    if (it.a < 0) out.neg.push(it);
+    else if (lastIdx.get(it.d) !== i) out.twice.push(it);
+    else valid.push(it);
+  });
+  valid.sort((x, y) => (x.d < y.d ? -1 : x.d > y.d ? 1 : 0));
+  out.found = valid.length;
+  if (valid.length >= 20) {
+    const gaps = [];
+    for (let i = 1; i < valid.length; i++) gaps.push(isoToDay(valid[i].d) - isoToDay(valid[i - 1].d));
+    gaps.sort((x, y) => x - y);
+    out.dense = gaps[gaps.length >> 1] <= 8;
+  }
+  let kept = valid;
+  if (out.dense && keep !== 'all') {
+    const key = keep === 'week' ? d => Math.floor((isoToDay(d) + 3) / 7) : d => d.slice(0, 7);
+    const last = new Map();
+    for (const v of valid) last.set(key(v.d), v);
+    const pick = new Set(last.values());
+    pick.add(valid[0]);
+    pick.add(valid[valid.length - 1]);
+    kept = valid.filter(v => pick.has(v));
+  }
+  if (out.dense) out.range = [valid[0].d, valid[valid.length - 1].d];
+  const inRange = d => !!out.range && d >= out.range[0] && d <= out.range[1];
+  const savedBy = new Map(saved.map(s => [s.d, s.a]));
+  out.kept = kept.map(v => {
+    const old = savedBy.get(v.d);
+    const st = old == null ? 'new' : Math.abs(old - v.a) < 0.005 ? 'same' : 'repl';
+    if (st === 'new') out.nNew++; else if (st === 'same') out.nSame++; else out.nRepl++;
+    return Object.assign({}, v, { st, old });
+  });
+  const keptDates = new Set(kept.map(v => v.d));
+  out.removed = saved.filter(s => inRange(s.d) && !keptDates.has(s.d));
+  const byDate = new Map();
+  for (const s of saved) if (!inRange(s.d)) byDate.set(s.d, s.a);
+  for (const v of kept) byDate.set(v.d, v.a);
+  out.history = [...byDate].map(([d, a]) => ({ d, a })).sort((x, y) => (x.d < y.d ? -1 : x.d > y.d ? 1 : 0));
+  out.changes = out.nNew + out.nRepl + out.removed.length;
+  return out;
+}
+
+/* Fewer points for drawing a long, dense value history: the last value of each week, month,
+   quarter or year (the finest of those that fits in maxPts), plus the first and the last. */
+function thinValues(vals, maxPts) {
+  if (vals.length <= maxPts) return vals;
+  const ym = t => { const d = new Date(t * DAY_MS); return [d.getUTCFullYear(), d.getUTCMonth()]; };
+  const keys = [t => Math.floor((t + 3) / 7), t => { const [y, m] = ym(t); return y * 12 + m; },
+    t => { const [y, m] = ym(t); return y * 4 + Math.floor(m / 3); }, t => ym(t)[0]];
+  let out = vals;
+  for (const key of keys) {
+    const last = new Map();
+    for (const v of vals) last.set(key(v.t), v);
+    const pick = new Set(last.values());
+    pick.add(vals[0]);
+    pick.add(vals[vals.length - 1]);
+    out = vals.filter(v => pick.has(v));
+    if (out.length <= maxPts) break;
+  }
+  return out;
+}
+
 function parseTextTable(text, opts) {
   opts = opts || {};
   const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n').filter(l => l.trim() !== '');
@@ -526,7 +717,8 @@ function parseTextTable(text, opts) {
     const table = lines.map(l => (dl === 'ws' ? wsSplit(l) : csvSplit(l, dl)));
     const r = analyzeRows(table, opts);
     r.delim = dl; r.table = table;
-    if (!best || r.items.length > best.items.length) best = r;
+    const rank = x => (x.broker ? 1e9 : 0) + x.items.length;
+    if (!best || rank(r) > rank(best)) best = r;
     if (dl === '\t' && r.items.length >= lines.length * 0.8) break;
   }
   return best;
@@ -616,4 +808,4 @@ function bestDepositSheet(wb, opts) {
   });
   return best;
 }
-if (typeof module !== 'undefined') module.exports = { ymdToIso, isoToDay, dayToIso, dayYear, buildAnchors, trAt, xirr, computeMetrics, growthSeries, valueAt, compareWindow, windowSeries, projectSeries, recurringDates, dateParts, resolveDate, parseAmount, guessDecimalComma, numberCore, analyzeRows, parseTextTable, serialToIso, isAppWorkbook, readAppWorkbook, findCurrentValue, bestDepositSheet, FORMAT_MARK };
+if (typeof module !== 'undefined') module.exports = { ymdToIso, isoToDay, dayToIso, dayYear, buildAnchors, trAt, xirr, computeMetrics, growthSeries, valueAt, compareWindow, windowSeries, planValues, thinValues, projectSeries, recurringDates, dateParts, resolveDate, parseAmount, guessDecimalComma, numberCore, analyzeRows, parseTextTable, serialToIso, isAppWorkbook, readAppWorkbook, findCurrentValue, bestDepositSheet, FORMAT_MARK };

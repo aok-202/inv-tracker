@@ -133,7 +133,7 @@ function upsertHistory(s, iso, a) {
   s.history = s.history.filter(x => x.d !== iso);
   s.history.push({ d: iso, a });
   s.history.sort((x, y) => (x.d < y.d ? -1 : 1));
-  if (s.history.length > 3000) s.history = s.history.slice(-3000);
+  if (s.history.length > 20000) s.history = s.history.slice(-20000);
 }
 function makeExample(today) {
   const s = emptyState();
@@ -271,7 +271,7 @@ function setTab(t, opts) {
 /* ---------- rendering ---------- */
 let editing = null;
 const openYears = new Set();
-let histOpen = false;
+let histOpen = false, histAll = false;
 let spxOpen = false;
 const proj = { years: 10, annual: null, annualTouched: false, rate: 0.07, preset: '7' };
 let lastM = null;
@@ -366,10 +366,13 @@ function renderValueCard(M) {
   tog.textContent = (histOpen ? 'Hide' : 'Show') + ' value history (' + hist.length + ')';
   tog.setAttribute('aria-expanded', String(histOpen));
   list.hidden = !histOpen || !hist.length;
-  list.replaceChildren(...hist.map(x => h('li', null,
+  /* the latest two years of month ends, or everything when asked; a daily history can run to thousands */
+  const shown = histAll ? hist : hist.slice(0, 24);
+  list.replaceChildren(...shown.map(x => h('li', null,
     h('span', { class: 'h-date' }, fmtDate(x.d)),
     h('span', { class: 'h-val' }, money(x.a, { dec: 0 })),
-    mode === 'example' ? h('span') : iconBtn('trash', 'Delete the value saved for ' + fmtDate(x.d), { 'data-action': 'del-snap', 'data-d': x.d }))));
+    mode === 'example' ? h('span') : iconBtn('trash', 'Delete the value saved for ' + fmtDate(x.d), { 'data-action': 'del-snap', 'data-d': x.d }))),
+    shown.length < hist.length ? h('li', { class: 'hist-more' }, h('button', { type: 'button', class: 'link', 'data-action': 'hist-all' }, 'Show all ' + hist.length + ' values')) : null);
 }
 
 function tone(v) { return v == null || !isFinite(v) || v === 0 ? '' : v > 0 ? 'good' : 'bad'; }
@@ -703,7 +706,16 @@ function drawGrowth() {
   const spPts = V.pts.filter(p => p.sp != null).map(p => [p.t, p.sp]);
   if (spPts.length) series.push({ cls: 'sp', type: 'line', end: true, pts: spPts });
   const lastReal = V.vin.length ? V.vin[V.vin.length - 1] : null;
-  if (V.vline.length) series.push({ cls: 'value', type: 'line', pts: V.vline, dots: V.vin.length <= 36, dotPts: V.vin.map(v => [v.t, v.a]), end: !!lastReal, endPt: lastReal ? [lastReal.t, lastReal.a] : null });
+  /* A value for every day would make a scribble: draw the last of each week or month instead (whichever fits),
+     always with the first and latest. Zooming in brings the detail back. The numbers still use every value. */
+  const drawn = thinValues(V.vin, Math.max(24, Math.floor(($('#growth-plot').clientWidth || 600) / 6)));
+  let vline = V.vline;
+  if (drawn !== V.vin) {
+    const head = V.vline.length && (!V.vin.length || V.vline[0][0] < V.vin[0].t) ? [V.vline[0]] : [];
+    const tail = V.vline.length && (!V.vin.length || V.vline[V.vline.length - 1][0] > lastReal.t) ? [V.vline[V.vline.length - 1]] : [];
+    vline = head.concat(drawn.map(v => [v.t, v.a]), tail);
+  }
+  if (vline.length) series.push({ cls: 'value', type: 'line', pts: vline, dots: drawn.length <= 36, dotPts: drawn.map(v => [v.t, v.a]), end: !!lastReal, endPt: lastReal ? [lastReal.t, lastReal.a] : null });
   const valBy = new Map(V.vin.map(v => [v.t, v.a]));
   const lastP = V.pts[V.pts.length - 1];
   $('#growth-legend').replaceChildren(
@@ -1264,7 +1276,7 @@ function animateGuilloche() {
 
 /* ---------- opening and saving Excel files ---------- */
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-const readOpts = () => ({ localeFmt: LOCALE_DATE_FMT, localeDecimalComma: LOCALE_DECIMAL_COMMA });
+const readOpts = () => ({ localeFmt: LOCALE_DATE_FMT, localeDecimalComma: LOCALE_DECIMAL_COMMA, want: imp.target, today: todayIso() });
 function openErrorMessage(e) {
   const c = e && e.code;
   if (c === 'notzip') return 'That file isn’t an .xlsx workbook. If it’s an old .xls file or password-protected, open it in Excel and save a copy as .xlsx without a password.';
@@ -1425,18 +1437,19 @@ async function deliver(blob, name) {
 
 /* ---------- import dialog: add many deposits, or read someone's own workbook ---------- */
 /* target: 'deposits' (the ledger) or 'values' (your portfolio's value on past dates) */
-const imp = { mode: 'add', target: 'deposits', tab: 'paste', fmt: 'auto', dateCol: null, amountCol: null, delim: null, src: null, sheetIdx: 0, res: null, skipDup: true, toAdd: [], openName: '', guess: null };
+/* keep: for a long run of daily values, keep the last of each 'month', each 'week', or 'all' of them */
+const imp = { mode: 'add', target: 'deposits', tab: 'paste', fmt: 'auto', dateCol: null, amountCol: null, delim: null, src: null, sheetIdx: 0, res: null, skipDup: true, toAdd: [], openName: '', guess: null, keep: 'month', plan: null };
 const IMP_TEXT = {
   deposits: { title: 'Add many deposits', label: 'In Excel, select your date and amount columns, copy them, then paste here.', placeholder: 'Date\tAmount\n15/01/2024\t500\n15/02/2024\t500\n20/03/2024\t1,250',
     drop: 'Excel (.xlsx) or CSV. The deposits in it are added to your ledger.', replace: 'Replace my existing deposits' },
-  values: { title: 'Add many values', label: 'In Excel, select a date column and your portfolio value on each date, copy them, then paste here.', placeholder: 'Date\tValue\n31/01/2024\t10,250\n29/02/2024\t10,610\n31/03/2024\t11,020',
-    drop: 'Excel (.xlsx) or CSV with a date column and a value column. The values are added to your value history.', replace: 'Replace my saved values' }
+  values: { title: 'Add many values', label: 'Paste a date column and your portfolio value on each date from Excel, or a whole broker export, such as Interactive Brokers’ CSV report.', placeholder: 'Date\tValue\n31/01/2024\t10,250\n29/02/2024\t10,610\n31/03/2024\t11,020',
+    drop: 'Excel (.xlsx) or CSV with a date column and a value column, or a broker export. The values are added to your value history.', replace: 'Replace my saved values' }
 };
 function importTabs() { return imp.target === 'values' ? ['paste', 'file'] : ['paste', 'file', 'recurring']; }
 const dlgImport = $('#dlg-import');
 function openDialog(d) { if (typeof d.showModal === 'function') { if (!d.open) d.showModal(); } else d.setAttribute('open', ''); }
 function closeDialog(d) { if (typeof d.close === 'function') { if (d.open) d.close(); } else d.removeAttribute('open'); }
-function resetImport() { Object.assign(imp, { fmt: 'auto', dateCol: null, amountCol: null, delim: null, res: null, toAdd: [], sheetIdx: 0 }); }
+function resetImport() { Object.assign(imp, { fmt: 'auto', dateCol: null, amountCol: null, delim: null, res: null, toAdd: [], sheetIdx: 0, keep: 'month', plan: null }); }
 function setImportTarget(target) {
   target = target === 'values' ? 'values' : 'deposits';
   if (target !== imp.target) { $('#imp-text').value = ''; $('#imp-file').value = ''; imp.src = null; }
@@ -1498,7 +1511,7 @@ function setImportTab(tabName) {
   analyzeImport();
 }
 function importOpts() {
-  return { fmt: imp.fmt, localeFmt: LOCALE_DATE_FMT, localeDecimalComma: LOCALE_DECIMAL_COMMA, dateCol: imp.dateCol, amountCol: imp.amountCol, delim: imp.delim };
+  return { fmt: imp.fmt, localeFmt: LOCALE_DATE_FMT, localeDecimalComma: LOCALE_DECIMAL_COMMA, dateCol: imp.dateCol, amountCol: imp.amountCol, delim: imp.delim, want: imp.target, today: todayIso() };
 }
 function analyzeImport() {
   if (imp.tab === 'paste') {
@@ -1517,6 +1530,16 @@ function analyzeImport() {
   renderImportPreview();
 }
 const colName = (i, header) => { const L = String.fromCharCode(65 + (i % 26)); return header && header[i] ? String(header[i]).slice(0, 20) + ' (' + L + ')' : 'Column ' + L; };
+/* What was read from a broker export, so the dates are never a surprise. */
+function brokerNote(b) {
+  const kinds = { month: 'Each month', quarter: 'Each quarter' };
+  let t = 'Read from the “' + b.section + '” section of your broker export.';
+  if (b.kind && kinds[b.kind]) {
+    t += ' ' + kinds[b.kind] + ' is dated its last day';
+    t += b.capped ? '; the ' + b.kind + ' that isn’t over yet is dated ' + (b.cap === todayIso() ? 'today' : fmtDate(b.cap) + ', when the report ends') + '.' : '.';
+  }
+  return h('p', { class: 'note' }, t);
+}
 /* Column pickers and date-order controls shared by the deposits and values previews. */
 function columnOptions(r, amountLabel) {
   const out = [];
@@ -1562,7 +1585,7 @@ function renderImportPreview() {
     else if (!r.dates.length) pv.append(h('p', { class: 'field-error' }, 'The last date needs to be on or after the first.'));
   }
   if (r.problem && !r.recurring) {
-    const msg = { empty: 'Nothing to read yet.', nodate: 'I couldn’t find a column of dates' + (imp.mode === 'open' ? ' on this sheet. Pick another sheet above, if there is one.' : '. Check that the date column came along when you copied.'), noamount: 'I found dates but no column of amounts next to them.' }[r.problem];
+    const msg = { empty: 'Nothing to read yet.', nodate: 'I couldn’t find a column of dates' + (imp.mode === 'open' ? ' on this sheet. Pick another sheet above, if there is one.' : '. Check that the date column came along when you copied.'), noamount: 'I found dates but no column of amounts next to them.', broker: 'This looks like a broker export, but it has no deposits section to read. To add your portfolio values from it, use Add many values on the Overview tab.' }[r.problem];
     pv.append(h('p', { class: 'field-error' }, msg));
   }
   const existing = new Set(replace || mode !== 'data' ? [] : state.deposits.map(d => d.d + '|' + d.a.toFixed(2)));
@@ -1570,6 +1593,7 @@ function renderImportPreview() {
   const items = r.items.map(it => { const dup = existing.has(it.d + '|' + it.a.toFixed(2)); if (dup) dups++; return Object.assign({ dup }, it); });
   const toAdd = items.filter(it => !(it.dup && imp.skipDup));
   imp.toAdd = toAdd;
+  if (r.broker && !r.problem) pv.append(brokerNote(r.broker));
   if (!r.recurring && r.ncol > 1 && !r.problem) pv.append(...columnOptions(r, 'Amounts from'));
   if (items.length || r.errors.length) {
     const sumTxt = [h('strong', null, plural(toAdd.length, 'entry', 'entries')), ' ready' + (imp.mode === 'open' ? '' : ' to add')];
@@ -1578,8 +1602,8 @@ function renderImportPreview() {
     const extra = [];
     if (dups) extra.push(plural(dups, 'row matches', 'rows match') + ' an entry already in your ledger');
     if (r.errors.length) extra.push(plural(r.errors.length, 'row', 'rows') + ' couldn’t be read');
-    if (r.header) extra.push('the header row was skipped');
-    if (r.skipped) extra.push(plural(r.skipped, 'row', 'rows') + ' without a date or amount ' + (r.skipped === 1 ? 'was' : 'were') + ' skipped');
+    if (r.header && !r.broker) extra.push('the header row was skipped');
+    if (r.skipped && !r.broker) extra.push(plural(r.skipped, 'row', 'rows') + ' without a date or amount ' + (r.skipped === 1 ? 'was' : 'were') + ' skipped');
     pv.append(h('p', { class: 'pv-summary' }, ...sumTxt, extra.length ? ' ' + extra.join('; ').replace(/^./, c => c.toUpperCase()) + '.' : ''));
     if (dups) {
       const cb = h('input', { type: 'checkbox', id: 'imp-skipdup' });
@@ -1599,7 +1623,18 @@ function renderImportPreview() {
   go.disabled = toAdd.length === 0;
   go.textContent = toAdd.length ? (imp.mode === 'open' ? 'Use these ' + plural(toAdd.length, 'entry', 'entries') : (replace ? 'Replace with ' : 'Add ') + plural(toAdd.length, 'entry', 'entries')) : (imp.mode === 'open' ? 'Use these deposits' : 'Add deposits');
 }
-/* Values: one per date. A date that's already saved gets the new value; the latest date becomes your current value. */
+/* Values: one per date. A date that's already saved gets the new value; the latest date becomes your current value.
+   A long run of daily values (a broker export) is thinned to one per month or week, so the chart stays readable. */
+const savedValues = s => {
+  const out = s.history.slice();
+  if (s.value && !out.some(x => x.d === s.value.d)) out.push({ d: s.value.d, a: s.value.a });
+  return out;
+};
+const KEEP = [
+  { k: 'month', label: 'The last value of each month' },
+  { k: 'week', label: 'The last value of each week' },
+  { k: 'all', label: 'Every value' }
+];
 function renderValuesPreview() {
   const pv = $('#imp-preview'), go = $('#imp-go');
   const replaceWrap = $('#imp-replace-wrap');
@@ -1607,71 +1642,79 @@ function renderValuesPreview() {
   const replace = !replaceWrap.hidden && $('#imp-replace').checked;
   pv.replaceChildren();
   imp.toAdd = [];
+  imp.plan = null;
   go.disabled = true;
   go.textContent = 'Add values';
   const r = imp.res;
   if (!r) return;
   if (r.problem) {
-    pv.append(h('p', { class: 'field-error' }, { empty: 'Nothing to read yet.', nodate: 'I couldn’t find a column of dates. Check that the date column came along when you copied.', noamount: 'I found dates but no column of values next to them.' }[r.problem]));
+    pv.append(h('p', { class: 'field-error' }, { empty: 'Nothing to read yet.', nodate: 'I couldn’t find a column of dates. Check that the date column came along when you copied.', noamount: 'I found dates but no column of values next to them.',
+      broker: 'This looks like a broker export, but I couldn’t find a section with a date and a NAV or total value column in it' + (r.broker && r.broker.sections.length ? ' (it has ' + r.broker.sections.slice(0, 6).map(s => '“' + s + '”').join(', ') + ')' : '') + '.' }[r.problem]));
     return;
   }
+  if (r.broker) pv.append(brokerNote(r.broker));
   if (r.ncol > 1) pv.append(...columnOptions(r, 'Values from'));
-  const saved = new Map();
-  if (!replace && mode === 'data') { for (const x of state.history) saved.set(x.d, x.a); if (state.value && !saved.has(state.value.d)) saved.set(state.value.d, state.value.a); }
-  const lastIdx = new Map();
-  r.items.forEach((it, i) => lastIdx.set(it.d, i));
-  const toAdd = [], rows = [];
-  let nRepl = 0, nSame = 0, nTwice = 0, nNeg = 0;
-  r.items.forEach((it, i) => {
-    let st = '', cls = '';
-    if (it.a < 0) { st = 'A value can’t be negative'; cls = 'err'; nNeg++; }
-    else if (lastIdx.get(it.d) !== i) { st = 'Same date again further down, skipped'; cls = 'dup'; nTwice++; }
-    else if (saved.has(it.d) && Math.abs(saved.get(it.d) - it.a) < 0.005) { st = 'Already saved'; cls = 'dup'; nSame++; }
-    else {
-      if (saved.has(it.d)) { st = 'Replaces ' + money(saved.get(it.d), { dec: 0 }); cls = 'repl'; nRepl++; }
-      toAdd.push(it);
-    }
-    rows.push({ line: it.line, d: fmtDate(it.d), a: money(it.a, {}), st, cls });
-  });
+  const saved = replace || mode !== 'data' ? [] : savedValues(state);
+  const plan = planValues(r.items, saved, imp.keep);
+  imp.plan = plan;
+  if (plan.dense) {
+    const ksel = h('select', { id: 'imp-keep' }, ...KEEP.map(o => h('option', { value: o.k }, o.label)));
+    ksel.value = imp.keep;
+    ksel.addEventListener('change', () => { imp.keep = ksel.value; renderValuesPreview(); });
+    pv.append(h('label', { class: 'field', for: 'imp-keep' }, h('span', { class: 'field-label' }, 'This has a value for nearly every day. Keep'), ksel));
+  }
+  const rows = plan.kept.map(v => ({ line: v.line, d: fmtDate(v.d), a: money(v.a, {}),
+    st: v.st === 'same' ? 'Already saved' : v.st === 'repl' ? 'Replaces ' + money(v.old, { dec: 0 }) : '', cls: v.st === 'same' ? 'dup' : v.st === 'repl' ? 'repl' : '' }));
+  for (const it of plan.neg) rows.push({ line: it.line, d: fmtDate(it.d), a: money(it.a, {}), st: 'A value can’t be negative', cls: 'err' });
   for (const e of r.errors) rows.push({ line: e.line, d: String(e.raw[0] == null ? '' : e.raw[0]), a: String(e.raw[1] == null ? '' : e.raw[1]), st: e.reason === 'date' ? 'Couldn’t read the date' : 'Couldn’t read the value', cls: 'err' });
   rows.sort((x, y) => (x.line || 0) - (y.line || 0));
-  imp.toAdd = toAdd;
+  const changes = plan.nNew + plan.nRepl;
+  imp.toAdd = plan.kept.filter(v => v.st !== 'same');
   if (rows.length) {
+    const lead = [];
+    if (plan.dense && imp.keep !== 'all') {
+      lead.push('Found ' + plural(plan.found, 'daily value', 'daily values') + ' from ' + fmtDate(plan.range[0]) + ' to ' + fmtDate(plan.range[1]) + '. Keeping ',
+        h('strong', null, plural(plan.kept.length, 'value', 'values')), ': the last of each ' + (imp.keep === 'week' ? 'week' : 'month') + ', plus the first and the latest.');
+    } else lead.push(h('strong', null, plural(plan.kept.length, 'value', 'values')), ' found.');
     const extra = [];
-    if (nRepl) extra.push(plural(nRepl, 'replaces a value', 'replace values') + ' you already saved for that date');
-    if (nSame) extra.push(plural(nSame, 'is', 'are') + ' already saved');
-    if (nTwice) extra.push(plural(nTwice, 'date appears', 'dates appear') + ' twice, so the lower row is used');
-    if (nNeg) extra.push(plural(nNeg, 'row has', 'rows have') + ' a negative value');
-    if (r.errors.length) extra.push(plural(r.errors.length, 'row', 'rows') + ' couldn’t be read');
-    if (r.header) extra.push('the header row was skipped');
-    if (r.skipped) extra.push(plural(r.skipped, 'row', 'rows') + ' without a date or value ' + (r.skipped === 1 ? 'was' : 'were') + ' skipped');
-    pv.append(h('p', { class: 'pv-summary' }, h('strong', null, plural(toAdd.length, 'value', 'values')), ' ready to add.', extra.length ? ' ' + extra.join('; ').replace(/^./, c => c.toUpperCase()) + '.' : ''));
-    if (toAdd.length) {
-      const newest = toAdd.reduce((m, x) => (x.d > m.d ? x : m), toAdd[0]);
-      const curD = replace || mode !== 'data' || !state.value ? '' : state.value.d;
-      if (newest.d >= curD) pv.append(h('p', { class: 'note' }, 'Your current value becomes ' + money(newest.a, { dec: 0 }) + ', from ' + fmtDate(newest.d) + ', the latest date here.'));
+    if (saved.length) {
+      if (plan.nNew) extra.push(plural(plan.nNew, 'is', 'are') + ' new');
+      if (plan.nRepl) extra.push(plural(plan.nRepl, 'replaces a value', 'replace values') + ' you saved for that date');
+      if (plan.nSame) extra.push(plural(plan.nSame, 'is', 'are') + ' already saved');
+      if (plan.removed.length) extra.push(plural(plan.removed.length, 'other saved value', 'other saved values') + ' in that period ' + (plan.removed.length === 1 ? 'is' : 'are') + ' replaced too');
     }
+    if (plan.twice.length) extra.push(plural(plan.twice.length, 'date appears', 'dates appear') + ' twice, so the lower row is used');
+    if (plan.neg.length) extra.push(plural(plan.neg.length, 'row has', 'rows have') + ' a negative value');
+    if (r.errors.length) extra.push(plural(r.errors.length, 'row', 'rows') + ' couldn’t be read');
+    if (r.header && !r.broker) extra.push('the header row was skipped');
+    if (r.skipped && !r.broker) extra.push(plural(r.skipped, 'row', 'rows') + ' without a date or value ' + (r.skipped === 1 ? 'was' : 'were') + ' skipped');
+    pv.append(h('p', { class: 'pv-summary' }, ...lead, extra.length ? ' ' + extra.join('; ').replace(/^./, c => c.toUpperCase()) + '.' : ''));
+    const newest = plan.kept.length ? plan.kept[plan.kept.length - 1] : null;
+    const curD = saved.length && state.value ? state.value.d : '';
+    if (newest && newest.st !== 'same' && newest.d >= curD) pv.append(h('p', { class: 'note' }, 'Your current value becomes ' + money(newest.a, { dec: 0 }) + ', from ' + fmtDate(newest.d) + ', the latest date here.'));
     const shown = rows.slice(0, 160);
     pv.append(h('div', { class: 'table-scroll' }, h('table', { class: 'num-table pv-table' },
       h('thead', null, h('tr', null, h('th', { scope: 'col' }, 'Date'), h('th', { scope: 'col' }, 'Value'), h('th', { scope: 'col' }, ''))),
       h('tbody', null, shown.map(x => h('tr', null, h('td', null, x.d), h('td', null, x.a), h('td', { class: 'st ' + x.cls }, x.st)))))));
     if (rows.length > shown.length) pv.append(h('p', { class: 'pv-more' }, 'Showing the first ' + shown.length + ' of ' + rows.length + ' rows.'));
   }
-  go.disabled = !toAdd.length;
-  if (toAdd.length) go.textContent = (replace ? 'Replace with ' : 'Add ') + plural(toAdd.length, 'value', 'values');
+  const n = changes || (plan.removed.length ? plan.kept.length : 0);
+  go.disabled = !n;
+  if (n) go.textContent = (replace ? 'Replace with ' : changes ? 'Add ' : 'Save ') + plural(replace ? plan.kept.length : n, 'value', 'values');
+  else if (plan.kept.length) go.textContent = 'All already saved';
 }
-async function runValuesImport(items) {
+async function runValuesImport() {
   const replace = !$('#imp-replace-wrap').hidden && $('#imp-replace').checked;
+  const r = imp.res, keep = imp.keep;
+  if (!r || !imp.plan) return;
+  const count = replace ? imp.plan.kept.length : imp.plan.nNew + imp.plan.nRepl;
   if (replace) {
     closeDialog(dlgImport);
-    const ok = await confirmBox('Replace your saved values?', 'Your ' + plural(state.history.length, 'saved value', 'saved values') + ' will be removed and replaced with ' + plural(items.length, 'value', 'values') + ' from this import.', 'Replace', true);
+    const ok = await confirmBox('Replace your saved values?', 'Your ' + plural(state.history.length, 'saved value', 'saved values') + ' will be removed and replaced with ' + plural(imp.plan.kept.length, 'value', 'values') + ' from this import.', 'Replace', true);
     if (!ok) { openDialog(dlgImport); return; }
   }
   const prev = commitData(s => {
-    const byDate = new Map();
-    if (!replace) { for (const x of s.history) byDate.set(x.d, x.a); if (s.value && !byDate.has(s.value.d)) byDate.set(s.value.d, s.value.a); }
-    for (const it of items) byDate.set(it.d, it.a);
-    s.history = [...byDate].map(([d, a]) => ({ d, a })).sort((x, y) => (x.d < y.d ? -1 : 1)).slice(-3000);
+    s.history = planValues(r.items, replace ? [] : savedValues(s), keep).history.slice(-20000);
     const last = s.history[s.history.length - 1];
     s.value = last ? { a: last.a, d: last.d } : null;
   });
@@ -1680,12 +1723,12 @@ async function runValuesImport(items) {
   $('#imp-file').value = '';
   imp.src = null;
   $('#imp-file-status').textContent = '';
-  toast((replace ? 'Replaced with ' : 'Added ') + plural(items.length, 'value', 'values'), prev);
+  toast(count ? (replace ? 'Replaced with ' : 'Added ') + plural(count, 'value', 'values') : 'Value history tidied', prev);
 }
 async function runImport() {
+  if (imp.target === 'values') { await runValuesImport(); return; }
   const items = imp.toAdd || [];
   if (!items.length) return;
-  if (imp.target === 'values') { await runValuesImport(items); return; }
   if (imp.mode === 'open') {
     let value = null;
     const va = parseInputAmount($('#imp-val-amount').value), vd = $('#imp-val-date').value;
@@ -1818,7 +1861,8 @@ const actions = {
   'open-import': btn => openImport(btn.dataset.tab, btn.dataset.target),
   'zoom-preset': btn => { resetZoom(); zoom.preset = btn.dataset.k; drawGrowth(); },
   'focus-value': () => { setTab('overview'); const el = $('#val-amount'); setTimeout(() => el.focus(), 50); },
-  'toggle-history': () => { histOpen = !histOpen; renderValueCard(lastM); },
+  'toggle-history': () => { histOpen = !histOpen; histAll = false; renderValueCard(lastM); },
+  'hist-all': () => { histAll = true; renderValueCard(lastM); },
   'del-snap': btn => {
     const d = btn.dataset.d;
     const prev = commitData(s => {

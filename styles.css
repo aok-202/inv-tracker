@@ -245,6 +245,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
 .val-links .link { font-size: 14.5px; min-height: 32px; }
 .hist { list-style: none; margin: 8px 0 0; padding: 0; border-top: 1px solid var(--rule); }
 .hist li { display: grid; grid-template-columns: 1fr auto 40px; gap: 8px; align-items: center; padding: 2px 0 2px 2px; border-bottom: 1px solid var(--rule); font-size: 14.5px; }
+.hist li.hist-more { display: block; padding: 8px 2px; border-bottom: 0; }
 .hist .h-date { color: var(--ink-2); }
 .hist .h-val { font-variant-numeric: tabular-nums; font-weight: 500; }
 
@@ -313,6 +314,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
 .nav-handle { position: absolute; top: 50%; width: 36px; height: 52px; margin-top: -26px; cursor: ew-resize; touch-action: none; z-index: 1; }
 .nav-handle.l { left: -19px; }
 .nav-handle.r { right: -19px; }
+/* a narrow window: grips step outside it so they don't sit on top of each other */
+.nav-win.narrow .nav-handle.l { left: -27px; }
+.nav-win.narrow .nav-handle.r { right: -27px; }
 .nav-handle::before {
   content: ""; position: absolute; left: 50%; top: 50%; width: 12px; height: 28px; margin: -14px 0 0 -6px;
   border-radius: 5px; background: var(--card); border: 2px solid var(--accent); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);

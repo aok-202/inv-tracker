@@ -2,13 +2,17 @@
    It only ever fetches files from this same site, and it never sees your Excel file or numbers.
    spx-data.js is fetched fresh from this site when online (the daily GitHub job updates it),
    with the saved copy used offline. When you change any other app file, change VERSION. */
-const VERSION = '2026-11-07.1';
+const VERSION = '2026-11-07.3';
 const CACHE = 'investment-tracker-' + VERSION;
-const FILES = ['./', 'index.html', 'styles.css', 'spx-data.js', 'calc.js', 'xlsx.js', 'app.js', 'manifest.webmanifest',
-  'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png'];
+/* The app can't run without these. */
+const FILES = ['./', 'index.html', 'styles.css', 'spx-data.js', 'calc.js', 'xlsx.js', 'app.js'];
+/* Nice to have: a missing icon must never stop the app from working offline or updating. */
+const EXTRAS = ['manifest.webmanifest', 'apple-touch-icon.png', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png'];
 
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(FILES)).then(() => self.skipWaiting()));
+  event.waitUntil(caches.open(CACHE).then(cache =>
+    cache.addAll(FILES).then(() => Promise.all(EXTRAS.map(f => cache.add(f).catch(() => null))))
+  ).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', event => {
   event.waitUntil(
