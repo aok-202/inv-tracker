@@ -717,6 +717,10 @@ function drawGrowth() {
   }
   if (vline.length) series.push({ cls: 'value', type: 'line', pts: vline, dots: drawn.length <= 36, dotPts: drawn.map(v => [v.t, v.a]), end: !!lastReal, endPt: lastReal ? [lastReal.t, lastReal.a] : null });
   const valBy = new Map(V.vin.map(v => [v.t, v.a]));
+  /* Reading the chart stops at your own values (the points on the line), so every stop shows your
+     portfolio next to the S&P 500 and your deposits. With no values in view it stops at deposits and month ends. */
+  const ptBy = new Map(V.pts.map(p => [p.t, p]));
+  const stops = drawn.length >= 2 ? drawn.map(v => v.t).filter(t => ptBy.has(t)) : V.pts.map(p => p.t);
   const lastP = V.pts[V.pts.length - 1];
   $('#growth-legend').replaceChildren(
     V.vline.length ? legendItem('value', 'Your portfolio', lastReal ? money(lastReal.a, { dec: 0 }) : null) : null,
@@ -726,16 +730,16 @@ function drawGrowth() {
   gz.api = lineChart(plot, {
     height: isWide() ? 300 : 250, x0: w.a, x1: w.b, external: true, yZero: !zoomed,
     xTicks: timeTicks(w.a, w.b, plot.clientWidth || 600),
-    series, yFmt: yMoney, samples: V.pts.map(p => p.t),
+    series, yFmt: yMoney, samples: stops,
     readout: i => {
-      const p = V.pts[i], rows = [];
+      const p = ptBy.get(stops[i]), rows = [];
       if (valBy.has(p.t)) rows.push({ cls: 'value', value: money(valBy.get(p.t), { dec: 0 }), label: 'Your portfolio' });
       if (p.sp != null) rows.push({ cls: 'sp', value: money(p.sp, { dec: 0 }), label: spLabel });
       rows.push({ cls: 'dep', value: money(p.dep, { dec: 0 }), label: 'Deposited' });
       return { title: fmtDay(p.t), rows };
     },
     focus: i => {
-      const p = V.pts[i], f = [{ cls: 'dep', x: p.t, y: p.dep }];
+      const p = ptBy.get(stops[i]), f = [{ cls: 'dep', x: p.t, y: p.dep }];
       if (p.sp != null) f.push({ cls: 'sp', x: p.t, y: p.sp });
       if (valBy.has(p.t)) f.push({ cls: 'value', x: p.t, y: valBy.get(p.t) });
       return f;
@@ -892,11 +896,14 @@ function navKey(e, which) {
 navHL.addEventListener('keydown', e => navKey(e, 'l'));
 navHR.addEventListener('keydown', e => navKey(e, 'r'));
 
-/* ---- gestures on the chart: one finger reads values, two fingers zoom and slide ----
+/* ---- gestures on the chart ----
+   Fingers: one finger reads values and never moves the chart; two fingers zoom and slide it.
+   Fingers are followed with touch events, whose list of fingers on the screen is always complete,
+   so a touch that turns into a page scroll can't leave a "finger" behind. Mouse and pen use pointer
+   events: hovering reads values, dragging slides a zoomed chart, double-clicking zooms.
    The touch layer stays in place while the chart under it is redrawn, so a pinch never loses its fingers. */
 const gTouch = $('#growth-touch');
-const ptrs = new Map();
-let gest = null, holdUntilClear = false, lastTap = null, gestureStart = null, lastPtrType = 'mouse';
+let tg = null, touchesDown = 0, mdrag = null, gestureStart = null, lastPtrType = 'mouse';
 function zoomAround(clientX) {
   const G = gz.G;
   if (!canZoom(G) || !gz.api) return;
@@ -907,42 +914,78 @@ function zoomAround(clientX) {
   setZoom(c - f * span, c - f * span + span);
   drawGrowth();
 }
-function startPinch() {
-  const [p, q] = [...ptrs.values()];
-  const P = gz.api.plot(), w = currentWindow(gz.G), mx = (p.x + q.x) / 2;
-  gest = { kind: 'pinch', P, d0: Math.max(24, Math.hypot(p.x - q.x, p.y - q.y)), a0: w.a, b0: w.b,
+const touchById = (list, id) => { for (let i = 0; i < list.length; i++) if (list[i].identifier === id) return list[i]; return null; };
+function startTouchPinch(t1, t2) {
+  const P = gz.api.plot(), w = currentWindow(gz.G), mx = (t1.clientX + t2.clientX) / 2;
+  tg = { kind: 'pinch', id1: t1.identifier, id2: t2.identifier, P, a0: w.a, b0: w.b,
+    d0: Math.max(24, Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY)),
     dm: w.a + ((mx - P.left) / P.width) * (w.b - w.a) };
   gz.api.hide();
 }
-function movePinch() {
-  const [p, q] = [...ptrs.values()];
-  const d = Math.max(24, Math.hypot(p.x - q.x, p.y - q.y)), mx = (p.x + q.x) / 2;
-  const span = ((gest.b0 - gest.a0) * gest.d0) / d;
-  const a = gest.dm - (span * (mx - gest.P.left)) / gest.P.width;
-  queueZoom(a, a + span);
+gTouch.addEventListener('touchstart', e => {
+  touchesDown = e.touches.length;
+  if (!gz.api) return;
+  if (e.touches.length >= 2) {
+    /* two fingers zoom the chart, never the page */
+    if (canZoom(gz.G)) { e.preventDefault(); startTouchPinch(e.touches[0], e.touches[1]); }
+    else tg = { kind: 'hold' };
+    return;
+  }
+  const t = e.touches[0];
+  tg = { kind: 'read', id: t.identifier, x0: t.clientX, y0: t.clientY, locked: false };
+  gz.api.show(gz.api.idxAt(t.clientX));
+}, { passive: false });
+gTouch.addEventListener('touchmove', e => {
+  if (!tg || !gz.api) return;
+  if (tg.kind === 'pinch') {
+    if (e.cancelable) e.preventDefault();
+    const t1 = touchById(e.touches, tg.id1), t2 = touchById(e.touches, tg.id2);
+    if (!t1 || !t2) { if (e.touches.length >= 2) startTouchPinch(e.touches[0], e.touches[1]); return; }
+    const d = Math.max(24, Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY)), mx = (t1.clientX + t2.clientX) / 2;
+    const span = ((tg.b0 - tg.a0) * tg.d0) / d, a = tg.dm - (span * (mx - tg.P.left)) / tg.P.width;
+    queueZoom(a, a + span);
+    return;
+  }
+  if (tg.kind !== 'read') { if (e.touches.length > 1 && e.cancelable) e.preventDefault(); return; }
+  const t = touchById(e.touches, tg.id);
+  if (!t) return;
+  const dx = t.clientX - tg.x0, dy = t.clientY - tg.y0;
+  if (!tg.locked) {
+    /* mostly up or down is scrolling the page: put the readout away and let the page move */
+    if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { tg = { kind: 'scroll' }; gz.api.hide(); return; }
+    if (Math.abs(dx) > 4) tg.locked = true;
+  }
+  /* sideways: keep reading values, and hold the page still while the finger moves */
+  if (tg.locked && e.cancelable) e.preventDefault();
+  gz.api.show(gz.api.idxAt(t.clientX));
+}, { passive: false });
+function touchEnd(e) {
+  touchesDown = e.touches.length;
+  if (!tg) return;
+  if (!e.touches.length) { tg = null; return; }
+  /* a finger lifted mid-pinch: keep pinching while two are down, otherwise wait until the last one lifts */
+  if (tg.kind === 'pinch' && e.touches.length < 2) tg = { kind: 'hold' };
 }
+gTouch.addEventListener('touchend', touchEnd);
+gTouch.addEventListener('touchcancel', touchEnd);
+document.addEventListener('visibilitychange', () => { tg = null; touchesDown = 0; mdrag = null; });
+/* a touch anywhere else puts the readout away */
+document.addEventListener('touchstart', e => { if (gz.api && !gTouch.contains(e.target)) gz.api.hide(); }, { passive: true });
+
 gTouch.addEventListener('pointerdown', e => {
   lastPtrType = e.pointerType;
-  if (!gz.api || (e.pointerType === 'mouse' && e.button !== 0)) return;
-  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, t0: e.timeStamp, type: e.pointerType });
-  if (e.pointerType !== 'touch') { try { gTouch.setPointerCapture(e.pointerId); } catch (err) { /* ok */ } }
-  if (ptrs.size === 2 && canZoom(gz.G)) { startPinch(); return; }
-  if (ptrs.size > 1) return;
-  const G = gz.G, w = G ? currentWindow(G) : null;
-  gest = e.pointerType === 'mouse' && G && isZoomed(G, w) ? { kind: 'drag', x0: e.clientX, a0: w.a, b0: w.b, moved: false, P: gz.api.plot() } : { kind: 'scrub' };
+  if (e.pointerType === 'touch' || !gz.api || (e.pointerType === 'mouse' && e.button !== 0)) return;
+  const w = currentWindow(gz.G);
+  mdrag = e.pointerType === 'mouse' && isZoomed(gz.G, w) ? { id: e.pointerId, x0: e.clientX, a0: w.a, b0: w.b, moved: false, P: gz.api.plot() } : null;
+  if (mdrag) { try { gTouch.setPointerCapture(e.pointerId); } catch (err) { /* fine without capture */ } }
   gz.api.show(gz.api.idxAt(e.clientX));
 });
 gTouch.addEventListener('pointermove', e => {
-  if (!gz.api) return;
-  const p = ptrs.get(e.pointerId);
-  if (!p) { if (e.pointerType === 'mouse') gz.api.show(gz.api.idxAt(e.clientX)); return; }
-  p.x = e.clientX; p.y = e.clientY;
-  if (gest && gest.kind === 'pinch') { if (ptrs.size >= 2) movePinch(); return; }
-  if (holdUntilClear || ptrs.size > 1) return;
-  if (gest && gest.kind === 'drag') {
-    if (Math.abs(e.clientX - gest.x0) > 3) gest.moved = true;
-    if (gest.moved) {
-      const span = gest.b0 - gest.a0, a = gest.a0 - ((e.clientX - gest.x0) / gest.P.width) * span;
+  if (e.pointerType === 'touch' || !gz.api) return;
+  if (mdrag && e.pointerId === mdrag.id) {
+    if (Math.abs(e.clientX - mdrag.x0) > 3) mdrag.moved = true;
+    if (mdrag.moved) {
+      const span = mdrag.b0 - mdrag.a0, a = mdrag.a0 - ((e.clientX - mdrag.x0) / mdrag.P.width) * span;
       gz.api.hide();
       queueZoom(a, a + span);
       return;
@@ -950,44 +993,23 @@ gTouch.addEventListener('pointermove', e => {
   }
   gz.api.show(gz.api.idxAt(e.clientX));
 });
-function endPointer(e) {
-  const p = ptrs.get(e.pointerId);
-  ptrs.delete(e.pointerId);
-  if (gest && gest.kind === 'pinch') {
-    if (ptrs.size < 2) { gest = null; holdUntilClear = ptrs.size > 0; }
-    return;
-  }
-  if (!ptrs.size) {
-    const wasHold = holdUntilClear;
-    holdUntilClear = false;
-    if (e.type === 'pointerup' && p && p.type === 'touch' && !wasHold && gest && gest.kind === 'scrub' &&
-        Math.hypot(e.clientX - p.x0, e.clientY - p.y0) < 12 && e.timeStamp - p.t0 < 320) {
-      /* double tap: zoom in around that spot, or back out to everything */
-      if (lastTap && e.timeStamp - lastTap.t < 360 && Math.abs(e.clientX - lastTap.x) < 36) { lastTap = null; zoomAround(e.clientX); }
-      else lastTap = { t: e.timeStamp, x: e.clientX };
-    }
-    gest = null;
-  }
-}
-gTouch.addEventListener('pointerup', endPointer);
-gTouch.addEventListener('pointercancel', endPointer);
-gTouch.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse' && !ptrs.size && gz.api) gz.api.hide(); });
-/* Browsers also report a double tap as a double click; the touch code above already handled it. */
+const endMouse = e => { if (mdrag && e.pointerId === mdrag.id) mdrag = null; };
+gTouch.addEventListener('pointerup', endMouse);
+gTouch.addEventListener('pointercancel', endMouse);
+gTouch.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse' && !mdrag && gz.api) gz.api.hide(); });
+/* Double-click zooms with a mouse only. A double tap does nothing, so tapping twice to read values can't zoom by surprise. */
 gTouch.addEventListener('dblclick', e => { if (lastPtrType === 'mouse') zoomAround(e.clientX); });
-/* Keep the page itself from zooming when two fingers are on the chart (iPhone Safari needs both of these). */
-const twoFingers = e => { if (e.touches && e.touches.length > 1 && canZoom(gz.G)) e.preventDefault(); };
-gTouch.addEventListener('touchstart', twoFingers, { passive: false });
-gTouch.addEventListener('touchmove', twoFingers, { passive: false });
-/* Safari's trackpad pinch on a Mac arrives as gesture events; on iPhone the pointer code above handles it. */
+/* Safari's trackpad pinch on a Mac arrives as gesture events. On an iPhone the touch code above does the
+   zooming, so these only stop the page from zooming. */
 gTouch.addEventListener('gesturestart', e => {
   e.preventDefault();
-  if (ptrs.size > 1 || !gz.api || !canZoom(gz.G)) { gestureStart = null; return; }
+  if (touchesDown > 0 || !gz.api || !canZoom(gz.G)) { gestureStart = null; return; }
   const w = currentWindow(gz.G), P = gz.api.plot(), x = e.clientX || P.left + P.width / 2;
   gestureStart = { w, P, x, dm: w.a + ((x - P.left) / P.width) * (w.b - w.a) };
 });
 gTouch.addEventListener('gesturechange', e => {
   e.preventDefault();
-  if (!gestureStart || ptrs.size > 1 || (gest && gest.kind === 'pinch') || !(e.scale > 0)) return;
+  if (!gestureStart || touchesDown > 0 || !(e.scale > 0)) return;
   const g = gestureStart, span = (g.w.b - g.w.a) / e.scale, a = g.dm - (span * (g.x - g.P.left)) / g.P.width;
   queueZoom(a, a + span);
 });
