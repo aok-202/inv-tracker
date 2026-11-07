@@ -121,19 +121,39 @@
             <p class="field-error" id="val-error" role="alert"></p>
             <p class="note" id="val-hint"></p>
             <p class="warn-note" id="val-warn" hidden></p>
-            <div id="val-history-wrap" hidden>
-              <button type="button" class="link" id="val-history-toggle" data-action="toggle-history" aria-expanded="false" aria-controls="val-history">Value history</button>
-              <ul class="hist" id="val-history" hidden></ul>
+            <div class="val-links">
+              <button type="button" class="link" id="val-history-toggle" data-action="toggle-history" aria-expanded="false" aria-controls="val-history" hidden>Value history</button>
+              <button type="button" class="link" id="val-bulk" data-action="open-import" data-target="values">Add many values</button>
             </div>
+            <ul class="hist" id="val-history" hidden></ul>
           </form>
         </section>
 
         <section id="kpis" class="card kpis span-2" aria-label="Key figures"></section>
 
         <section id="growth" class="card span-2" aria-labelledby="growth-title">
-          <div class="card-head"><h2 id="growth-title">Deposits and value over time</h2></div>
+          <div class="card-head">
+            <h2 id="growth-title">Deposits and value over time</h2>
+            <div class="range-presets" id="growth-presets" role="group" aria-label="Time window"></div>
+          </div>
           <ul class="legend" id="growth-legend"></ul>
-          <div class="chart" id="growth-chart"></div>
+          <div class="chart zoomable" id="growth-chart">
+            <div class="plot" id="growth-plot"></div>
+            <div class="touch" id="growth-touch" aria-hidden="true"></div>
+          </div>
+          <div class="nav" id="growth-nav" role="group" aria-label="Chart window" hidden>
+            <div class="nav-track" id="nav-track">
+              <svg class="nav-spark" id="growth-spark" viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true"></svg>
+              <div class="nav-shade l" id="nav-shade-l"></div>
+              <div class="nav-shade r" id="nav-shade-r"></div>
+              <div class="nav-win" id="nav-win">
+                <div class="nav-handle l" id="nav-h-l" role="slider" tabindex="0" aria-label="Start of the chart window"></div>
+                <div class="nav-handle r" id="nav-h-r" role="slider" tabindex="0" aria-label="End of the chart window"></div>
+              </div>
+            </div>
+          </div>
+          <p class="win-caption" id="growth-window"></p>
+          <div class="cmp" id="growth-compare" aria-live="polite" hidden></div>
           <details class="table-view" id="growth-tv">
             <summary>Show as a table</summary>
             <div class="table-scroll" id="growth-table"></div>
@@ -241,7 +261,7 @@
     </div>
     <div class="dlg-body">
       <div class="panel" id="panel-paste" role="tabpanel" aria-labelledby="tab-paste">
-        <label class="field" for="imp-text"><span class="field-label">In Excel, select your date and amount columns, copy them, then paste here.</span>
+        <label class="field" for="imp-text"><span class="field-label" id="imp-text-label">In Excel, select your date and amount columns, copy them, then paste here.</span>
           <textarea id="imp-text" spellcheck="false" placeholder="Date&#9;Amount&#10;15/01/2024&#9;500&#10;15/02/2024&#9;500&#10;20/03/2024&#9;1,250"></textarea>
         </label>
       </div>
@@ -249,7 +269,7 @@
         <label class="drop" for="imp-file" id="imp-drop">
           <input type="file" id="imp-file" accept=".xlsx,.xlsm,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv">
           <strong>Choose a file</strong>
-          <span>Excel (.xlsx) or CSV. The deposits in it are added to your ledger.</span>
+          <span id="imp-drop-note">Excel (.xlsx) or CSV. The deposits in it are added to your ledger.</span>
         </label>
         <p class="note" id="imp-file-status"></p>
         <div class="imp-value" id="imp-value" hidden>
@@ -290,7 +310,7 @@
       <div class="preview" id="imp-preview" aria-live="polite"></div>
     </div>
     <div class="dlg-foot">
-      <label class="check grow" id="imp-replace-wrap"><input type="checkbox" id="imp-replace"> Replace my existing deposits</label>
+      <label class="check grow" id="imp-replace-wrap"><input type="checkbox" id="imp-replace"> <span id="imp-replace-label">Replace my existing deposits</span></label>
       <button class="btn btn-primary" type="button" id="imp-go" disabled>Add deposits</button>
     </div>
   </form>

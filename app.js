@@ -214,6 +214,7 @@ function commitData(mutator) {
     if (mode === 'example') Object.assign(file, { name: null, appFormat: false, savedAt: null, source: null });
     mode = 'data';
     openYears.clear();
+    resetZoom();
   }
   mutator(state);
   state.updatedAt = Date.now();
@@ -359,12 +360,12 @@ function renderValueCard(M) {
     warn.hidden = false;
     warn.textContent = plural(M.after.length, 'deposit', 'deposits') + ' after ' + fmtDate(state.value.d) + (M.after.length === 1 ? ' isn’t' : ' aren’t') + ' counted in your returns yet. Update the value to include ' + (M.after.length === 1 ? 'it.' : 'them.');
   } else warn.hidden = true;
-  const wrap = $('#val-history-wrap'), list = $('#val-history'), tog = $('#val-history-toggle');
+  const list = $('#val-history'), tog = $('#val-history-toggle');
   const hist = state.history.slice().sort((a, b) => (a.d < b.d ? 1 : -1));
-  wrap.hidden = hist.length === 0;
+  tog.hidden = hist.length === 0;
   tog.textContent = (histOpen ? 'Hide' : 'Show') + ' value history (' + hist.length + ')';
   tog.setAttribute('aria-expanded', String(histOpen));
-  list.hidden = !histOpen;
+  list.hidden = !histOpen || !hist.length;
   list.replaceChildren(...hist.map(x => h('li', null,
     h('span', { class: 'h-date' }, fmtDate(x.d)),
     h('span', { class: 'h-val' }, money(x.a, { dec: 0 })),
@@ -379,7 +380,8 @@ function renderKpis(M) {
     { label: 'Total deposited', value: money(M.total, { dec: 0 }),
       cap: M.count ? (M.nWd ? plural(M.nDep, 'deposit', 'deposits') + ', ' + plural(M.nWd, 'withdrawal', 'withdrawals') : plural(M.nDep, 'deposit', 'deposits')) : 'No deposits yet' },
     { label: 'Average per year', value: M.avgPerYear != null ? money(M.avgPerYear, { dec: 0 }) : '—',
-      cap: M.years ? 'Total ÷ ' + num(M.years, 2) + ' years' : 'Total ÷ years invested' },
+      cap: !M.avgYears ? 'Average of each calendar year’s total' : M.avgYears.n === 1 ? 'Only ' + M.avgYears.y0 + ' so far'
+        : 'Average of ' + M.avgYears.n + ' yearly totals, ' + M.avgYears.y0 + '–' + M.avgYears.y1 },
     { label: 'Years since first deposit', value: M.years != null ? num(M.years, 2) : '—',
       cap: M.first != null ? 'Since ' + fmtDay(M.first) : 'Starts with your first deposit' },
     { label: 'Deposited in ' + M.cy, value: money(M.thisYear.sum, { dec: 0 }), cap: (M.cy - 1) + ': ' + money(M.lastYear.sum, { dec: 0 }) },
@@ -434,12 +436,19 @@ function axisPad(T, fmt) {
 function legendItem(cls, label, value, area) {
   return h('li', null, h('i', { class: area ? 'area-key' : 'key key-' + cls }), h('span', null, label), value != null ? h('b', null, value) : null);
 }
+/* o.yZero false: the y-axis fits the data shown instead of starting at zero (zoomed-in charts).
+   o.external: no pointer handling of its own; the caller drives show/hide through the returned api. */
 function lineChart(box, o) {
   box.replaceChildren();
   const W = Math.max(260, Math.floor(box.clientWidth || 600)), H = o.height;
-  let yMax = 0, yMin = 0;
+  let yMax = -Infinity, yMin = Infinity;
   for (const s of o.series) for (const p of s.pts) { if (p[1] > yMax) yMax = p[1]; if (p[1] < yMin) yMin = p[1]; }
-  const T = niceTicks(yMin, yMax * 1.02, H < 230 ? 4 : 5);
+  if (!isFinite(yMax)) { yMax = 0; yMin = 0; }
+  let T;
+  if (o.yZero === false && yMax > yMin) {
+    const pad = (yMax - yMin) * 0.08;
+    T = niceTicks(yMin >= 0 ? Math.max(0, yMin - pad) : yMin - pad, yMax + pad, H < 230 ? 4 : 5);
+  } else T = niceTicks(Math.min(0, yMin), Math.max(0, yMax) * 1.02, H < 230 ? 4 : 5);
   const ml = axisPad(T, o.yFmt), mr = 10, mt = 12, mb = 28;
   const pw = W - ml - mr, ph = H - mt - mb;
   const X = v => ml + (o.x1 === o.x0 ? pw / 2 : ((v - o.x0) / (o.x1 - o.x0)) * pw);
@@ -466,13 +475,14 @@ function lineChart(box, o) {
     });
     if (s.area) svg.append(sv('path', { d: d + 'V' + baseY.toFixed(1) + 'H' + X(s.pts[0][0]).toFixed(1) + 'Z', class: 'area f-' + s.cls }));
     svg.append(sv('path', { d, class: 'line s-' + s.cls }));
-    if (s.dots) for (const p of s.pts) svg.append(sv('circle', { cx: X(p[0]).toFixed(1), cy: Y(p[1]).toFixed(1), r: 4, class: 'dot f-' + s.cls }));
-    else if (s.end) { const p = s.pts[s.pts.length - 1]; svg.append(sv('circle', { cx: X(p[0]).toFixed(1), cy: Y(p[1]).toFixed(1), r: 4, class: 'dot f-' + s.cls })); }
+    if (s.dots) for (const p of (s.dotPts || s.pts)) svg.append(sv('circle', { cx: X(p[0]).toFixed(1), cy: Y(p[1]).toFixed(1), r: 4, class: 'dot f-' + s.cls }));
+    else if (s.end) { const p = s.endPt || s.pts[s.pts.length - 1]; svg.append(sv('circle', { cx: X(p[0]).toFixed(1), cy: Y(p[1]).toFixed(1), r: 4, class: 'dot f-' + s.cls })); }
   }
   const xh = sv('line', { class: 'xhair', y1: mt, y2: mt + ph, x1: -20, x2: -20, visibility: 'hidden' });
   const fg = sv('g');
-  const hit = sv('rect', { x: ml, y: 0, width: Math.max(1, pw), height: H - 6, fill: 'transparent', class: 'hit' });
-  svg.append(xh, fg, hit);
+  const hit = o.external ? null : sv('rect', { x: ml, y: 0, width: Math.max(1, pw), height: H - 6, fill: 'transparent', class: 'hit' });
+  svg.append(xh, fg);
+  if (hit) svg.append(hit);
   box.append(svg);
   const tip = h('div', { class: 'tip', hidden: true });
   box.append(tip);
@@ -500,9 +510,11 @@ function lineChart(box, o) {
     const px = (cx - rect.left) * (W / rect.width);
     return nearest(o.samples, o.x0 + ((px - ml) / pw) * (o.x1 - o.x0));
   };
-  hit.addEventListener('pointermove', e => show(idxAt(e.clientX)));
-  hit.addEventListener('pointerdown', e => show(idxAt(e.clientX)));
-  hit.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') hide(); });
+  if (hit) {
+    hit.addEventListener('pointermove', e => show(idxAt(e.clientX)));
+    hit.addEventListener('pointerdown', e => show(idxAt(e.clientX)));
+    hit.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') hide(); });
+  }
   box.tabIndex = 0;
   box.setAttribute('aria-label', o.label + '. Use the left and right arrow keys to read values.');
   box.onkeydown = e => {
@@ -512,6 +524,11 @@ function lineChart(box, o) {
     } else if (e.key === 'Escape') hide();
   };
   box.onblur = hide;
+  return {
+    show: i => { if (o.samples.length) show(i); }, hide, idxAt,
+    /* the plot area in page pixels, for turning finger positions into dates */
+    plot: () => { const r = svg.getBoundingClientRect(), k = r.width / W; return { left: r.left + ml * k, width: Math.max(1, pw * k) }; }
+  };
 }
 function roundedBar(x, w, y0, y1, r) {
   const hgt = Math.abs(y0 - y1);
@@ -604,43 +621,164 @@ function timeTicks(t0, t1, width) {
 const yMoney = (v, compact) => money(v, compact ? { compact: true } : { dec: 0 });
 const isWide = () => window.innerWidth >= 720;
 
+/* ---------- the growth chart, with a window you can zoom: pinch, trackpad, or the slider below ---------- */
+const MIN_SPAN = 31;
+const zoom = { preset: 'all', a: null, b: null, pinEnd: false };
+const gz = { G: null, M: null, api: null };
+function resetZoom() { Object.assign(zoom, { preset: 'all', a: null, b: null, pinEnd: false }); }
+const canZoom = G => !!G && G.end - G.start >= 2 * MIN_SPAN;
+const isZoomed = (G, w) => w.a > G.start || w.b < G.end;
+function clampWindow(G, a, b) {
+  const full = G.end - G.start, minS = Math.min(full, MIN_SPAN);
+  a = Math.round(a); b = Math.round(b);
+  const span = Math.max(minS, Math.min(full, b - a));
+  a = Math.max(G.start, Math.min(G.end - span, a));
+  return { a, b: a + span };
+}
+const PRESETS = [
+  { k: 'ytd', label: 'YTD', name: 'This year so far' },
+  { k: '1y', label: '1Y', name: 'Last year', n: 1 },
+  { k: '3y', label: '3Y', name: 'Last 3 years', n: 3 },
+  { k: '5y', label: '5Y', name: 'Last 5 years', n: 5 },
+  { k: 'all', label: 'All', name: 'Everything' }
+];
+function presetRange(G, k) {
+  if (k === 'all') return { a: G.start, b: G.end };
+  const p = PRESETS.find(x => x.k === k);
+  if (!p) return null;
+  const e = new Date(G.end * DAY_MS), y = e.getUTCFullYear();
+  const a = Math.round((k === 'ytd' ? Date.UTC(y, 0, 1) : Date.UTC(y - p.n, e.getUTCMonth(), e.getUTCDate())) / DAY_MS);
+  if (a <= G.start + 14 || G.end - a < MIN_SPAN) return null;
+  return { a, b: G.end };
+}
+function currentWindow(G) {
+  if (!canZoom(G)) return { a: G.start, b: G.end };
+  if (zoom.preset) return presetRange(G, zoom.preset) || { a: G.start, b: G.end };
+  if (zoom.a == null) return { a: G.start, b: G.end };
+  return clampWindow(G, zoom.a, zoom.pinEnd ? G.end : zoom.b);
+}
+function setZoom(a, b) {
+  const G = gz.G;
+  if (!G) return;
+  const w = clampWindow(G, a, b);
+  Object.assign(zoom, { a: w.a, b: w.b, pinEnd: w.b >= G.end, preset: isZoomed(G, w) ? null : 'all' });
+}
+let zoomQueued = false;
+function queueZoom(a, b) {
+  setZoom(a, b);
+  if (zoomQueued) return;
+  zoomQueued = true;
+  requestAnimationFrame(() => { zoomQueued = false; drawGrowth(); });
+}
+function spanText(days) {
+  if (days >= 347) { const y = days / 365.25; return Math.abs(y - Math.round(y)) < 0.05 ? plural(Math.round(y), 'year', 'years') : num(y, 1) + ' years'; }
+  const m = Math.round(days / 30.44);
+  return m >= 2 ? m + ' months' : plural(Math.round(days), 'day', 'days');
+}
+
 function renderGrowth(M) {
-  const box = $('#growth-chart'), legend = $('#growth-legend'), tbl = $('#growth-table');
   const G = growthSeries(M, state.history, getAnchors());
+  gz.G = G; gz.M = M;
   if (!G) {
-    box.replaceChildren(h('p', { class: 'empty' }, 'Your chart appears after your first deposit.'));
-    legend.replaceChildren(); tbl.replaceChildren(); $('#growth-tv').hidden = true;
+    gz.api = null;
+    $('#growth-plot').replaceChildren(h('p', { class: 'empty' }, 'Your chart appears after your first deposit.'));
+    $('#growth-legend').replaceChildren(); $('#growth-table').replaceChildren(); $('#growth-tv').hidden = true;
+    $('#growth-nav').hidden = true; $('#growth-presets').replaceChildren(); $('#growth-window').textContent = '';
+    $('#growth-compare').hidden = true;
     return;
   }
   $('#growth-tv').hidden = false;
-  const series = [{ cls: 'dep', type: 'step', area: true, pts: G.pts.map(p => [p.t, p.dep]) }];
-  if (G.spOK) series.push({ cls: 'sp', type: 'line', end: true, pts: G.pts.map(p => [p.t, p.sp]) });
-  if (G.vals.length) series.push({ cls: 'value', type: 'line', dots: G.vals.length <= 36, end: true, pts: G.vals.map(v => [v.t, v.a]) });
-  const valBy = new Map(G.vals.map(v => [v.t, v.a]));
-  const last = G.pts[G.pts.length - 1];
-  legend.replaceChildren(
-    G.vals.length ? legendItem('value', 'Your portfolio', money(G.vals[G.vals.length - 1].a, { dec: 0 })) : null,
-    G.spOK ? legendItem('sp', 'S&P 500, same deposits', money(last.sp, { dec: 0 })) : null,
-    legendItem('dep', 'Deposited', money(last.dep, { dec: 0 }), true));
-  lineChart(box, {
-    height: isWide() ? 300 : 250, x0: G.start, x1: G.end,
-    xTicks: timeTicks(G.start, G.end, box.clientWidth || 600),
-    series, yFmt: yMoney, samples: G.pts.map(p => p.t),
+  drawSpark(G);
+  drawGrowth();
+  growthTable(G);
+}
+
+function drawGrowth() {
+  const G = gz.G, M = gz.M;
+  if (!G || mode === 'welcome') return;
+  const zoomable = canZoom(G), w = currentWindow(G), zoomed = isZoomed(G, w);
+  const V = windowSeries(G, M.deps, getAnchors(), w.a, w.b);
+  const spLabel = V.rebased ? 'S&P 500 from ' + fmtDay(V.cmp.t0) : 'S&P 500, same deposits';
+  const series = [{ cls: 'dep', type: 'step', area: true, pts: V.pts.map(p => [p.t, p.dep]) }];
+  const spPts = V.pts.filter(p => p.sp != null).map(p => [p.t, p.sp]);
+  if (spPts.length) series.push({ cls: 'sp', type: 'line', end: true, pts: spPts });
+  const lastReal = V.vin.length ? V.vin[V.vin.length - 1] : null;
+  if (V.vline.length) series.push({ cls: 'value', type: 'line', pts: V.vline, dots: V.vin.length <= 36, dotPts: V.vin.map(v => [v.t, v.a]), end: !!lastReal, endPt: lastReal ? [lastReal.t, lastReal.a] : null });
+  const valBy = new Map(V.vin.map(v => [v.t, v.a]));
+  const lastP = V.pts[V.pts.length - 1];
+  $('#growth-legend').replaceChildren(
+    V.vline.length ? legendItem('value', 'Your portfolio', lastReal ? money(lastReal.a, { dec: 0 }) : null) : null,
+    spPts.length ? legendItem('sp', spLabel, money(spPts[spPts.length - 1][1], { dec: 0 })) : null,
+    legendItem('dep', 'Deposited', money(lastP.dep, { dec: 0 }), true));
+  const plot = $('#growth-plot');
+  gz.api = lineChart(plot, {
+    height: isWide() ? 300 : 250, x0: w.a, x1: w.b, external: true, yZero: !zoomed,
+    xTicks: timeTicks(w.a, w.b, plot.clientWidth || 600),
+    series, yFmt: yMoney, samples: V.pts.map(p => p.t),
     readout: i => {
-      const p = G.pts[i], rows = [];
+      const p = V.pts[i], rows = [];
       if (valBy.has(p.t)) rows.push({ cls: 'value', value: money(valBy.get(p.t), { dec: 0 }), label: 'Your portfolio' });
-      if (p.sp != null) rows.push({ cls: 'sp', value: money(p.sp, { dec: 0 }), label: 'S&P 500, same deposits' });
+      if (p.sp != null) rows.push({ cls: 'sp', value: money(p.sp, { dec: 0 }), label: spLabel });
       rows.push({ cls: 'dep', value: money(p.dep, { dec: 0 }), label: 'Deposited' });
       return { title: fmtDay(p.t), rows };
     },
     focus: i => {
-      const p = G.pts[i], f = [{ cls: 'dep', x: p.t, y: p.dep }];
+      const p = V.pts[i], f = [{ cls: 'dep', x: p.t, y: p.dep }];
       if (p.sp != null) f.push({ cls: 'sp', x: p.t, y: p.sp });
       if (valBy.has(p.t)) f.push({ cls: 'value', x: p.t, y: valBy.get(p.t) });
       return f;
     },
-    label: 'Line chart: money deposited, your portfolio value, and the same deposits in the S&P 500, over time'
+    label: 'Line chart' + (zoomed ? ' from ' + fmtDay(w.a) + ' to ' + fmtDay(w.b) : '') + ': money deposited, your portfolio value, and ' + (V.rebased ? 'the S&P 500 starting from your value on ' + fmtDay(V.cmp.t0) : 'the same deposits in the S&P 500') + ', over time'
   });
+  $('#growth-chart').classList.toggle('zoomed', zoomed);
+  $('#growth-nav').hidden = !zoomable;
+  if (zoomable) navLayout(G, w);
+  renderPresets(G, zoomable);
+  $('#growth-window').textContent = !zoomable ? '' : zoomed ? fmtDay(w.a) + ' – ' + fmtDay(w.b) + ' · ' + spanText(w.b - w.a) : 'Pinch the chart or drag the handles to look at a shorter period.';
+  renderCompare(V, zoomed);
+}
+
+function renderPresets(G, zoomable) {
+  const box = $('#growth-presets');
+  if (!zoomable) { box.replaceChildren(); return; }
+  box.replaceChildren(...PRESETS.filter(p => presetRange(G, p.k)).map(p =>
+    h('button', { type: 'button', 'data-action': 'zoom-preset', 'data-k': p.k, 'aria-label': p.name, 'aria-pressed': String(zoom.preset === p.k) }, p.label)));
+}
+
+function renderCompare(V, zoomed) {
+  const box = $('#growth-compare');
+  if (!zoomed) { box.hidden = true; box.replaceChildren(); return; }
+  box.hidden = false;
+  const c = V.cmp;
+  const addLink = () => (mode === 'example' ? null : h('button', { type: 'button', class: 'link', 'data-action': 'open-import', 'data-target': 'values' }, 'Add many values'));
+  if (c.problem) {
+    const msg = c.problem === 'nosp' ? 'The S&P 500 data here starts in January 1985, so this period can’t be compared with it.'
+      : c.fromStart ? 'To compare this period with the S&P 500, the app needs your portfolio value on a date inside it.'
+        : 'To compare this period with the S&P 500, the app needs your portfolio value on at least two dates inside it.';
+    box.replaceChildren(h('p', { class: 'note' }, msg + ' ', c.problem === 'nosp' ? null : addLink()));
+    return;
+  }
+  const row = (cls, name, gain, ret) => h('tr', null,
+    h('td', null, h('i', { class: 'key key-' + cls }), name),
+    h('td', null, money(gain, { sign: true, dec: 0 })),
+    h('td', null, ret != null ? pct(ret) : '—'));
+  const ahead = c.diff >= 0;
+  const flows = Math.abs(c.net) < 0.005 ? 'with no deposits in between' : c.net > 0 ? 'then get the same ' + money(c.net, { dec: 0 }) + ' of deposits' : 'then have the same ' + money(-c.net, { dec: 0 }) + ' taken out';
+  box.replaceChildren(
+    h('p', { class: 'cmp-title' }, (c.fromStart ? 'Your first deposit, ' + fmtDay(c.t0) : fmtDay(c.t0)) + ' to ' + fmtDay(c.t1)),
+    h('div', { class: 'table-scroll' }, h('table', { class: 'num-table cmp-table' },
+      h('thead', null, h('tr', null, h('th', { scope: 'col' }, h('span', { class: 'sr-only' }, 'Investment')), h('th', { scope: 'col' }, 'Gain'), h('th', { scope: 'col' }, 'Return'))),
+      h('tbody', null, row('value', 'Your portfolio', c.gainV, c.retV), row('sp', 'S&P 500', c.gainS, c.retS)))),
+    h('p', { class: 'verdict' },
+      h('span', { class: 'pill ' + (ahead ? 'pill-good' : 'pill-bad') }, h('span', { 'aria-hidden': 'true' }, ahead ? '▲' : '▼'),
+        money(Math.abs(c.diff), { dec: 0 }) + (ahead ? ' ahead of' : ' behind') + ' the S&P 500')),
+    h('p', { class: 'fine' }, c.fromStart
+      ? 'Gains after deposits. The S&P 500 side gets the same deposits on the same days. Return counts each deposit from the day it went in.'
+      : 'Gains after deposits. Both start from your ' + money(c.V0, { dec: 0 }) + ' on ' + fmtDay(c.t0) + ' and ' + flows + '. Return counts each deposit from the day it went in.'));
+}
+
+function growthTable(G) {
+  const valBy = new Map(G.vals.map(v => [v.t, v.a]));
   const rowsT = new Set();
   for (const p of G.pts) if (dayMonth(p.t) === 12 && dayDate(p.t) === 31) rowsT.add(p.t);
   for (const v of G.vals) rowsT.add(v.t);
@@ -651,10 +789,214 @@ function renderGrowth(M) {
     return h('tr', null, h('td', null, fmtDay(t)), h('td', null, money(p.dep, { dec: 0 })),
       h('td', null, valBy.has(t) ? money(valBy.get(t), { dec: 0 }) : '—'), h('td', null, p.sp != null ? money(p.sp, { dec: 0 }) : '—'));
   });
-  tbl.replaceChildren(h('table', { class: 'num-table' },
+  $('#growth-table').replaceChildren(h('table', { class: 'num-table' },
     h('thead', null, h('tr', null, h('th', { scope: 'col' }, 'Date'), h('th', { scope: 'col' }, 'Deposited'), h('th', { scope: 'col' }, 'Your portfolio'), h('th', { scope: 'col' }, 'S&P 500, same deposits'))),
     h('tbody', null, trs)));
 }
+
+/* The small overview behind the window slider: everything, start to end. */
+function drawSpark(G) {
+  const svg = $('#growth-spark');
+  const full = Math.max(1, G.end - G.start);
+  let max = 0, min = 0;
+  for (const p of G.pts) { if (p.dep > max) max = p.dep; if (p.dep < min) min = p.dep; }
+  for (const v of G.vals) { if (v.a > max) max = v.a; if (v.a < min) min = v.a; }
+  if (max === min) max = min + 1;
+  const X = t => (((t - G.start) / full) * 1000).toFixed(1), Y = v => (94 - ((v - min) / (max - min)) * 84).toFixed(1);
+  let dep = '';
+  G.pts.forEach((p, i) => { dep += i ? 'H' + X(p.t) + 'V' + Y(p.dep) : 'M' + X(p.t) + ' ' + Y(p.dep); });
+  const kids = [sv('path', { d: dep + 'V' + Y(0) + 'H' + X(G.pts[0].t) + 'Z', class: 'sp-area' })];
+  if (G.vals.length > 1) kids.push(sv('path', { d: G.vals.map((v, i) => (i ? 'L' : 'M') + X(v.t) + ' ' + Y(v.a)).join(''), class: 'sp-line' }));
+  svg.replaceChildren(...kids);
+}
+
+/* ---- the window slider ---- */
+const navTrack = $('#nav-track'), navWin = $('#nav-win'), navHL = $('#nav-h-l'), navHR = $('#nav-h-r');
+function navLayout(G, w) {
+  const full = G.end - G.start, minS = Math.min(full, MIN_SPAN);
+  const l = ((w.a - G.start) / full) * 100, r = ((w.b - G.start) / full) * 100;
+  navWin.style.left = l + '%';
+  navWin.style.width = (r - l) + '%';
+  $('#nav-shade-l').style.width = l + '%';
+  $('#nav-shade-r').style.left = r + '%';
+  navWin.classList.toggle('narrow', (navTrack.clientWidth * (w.b - w.a)) / full < 48);
+  const setSlider = (el, min, max, now) => {
+    el.setAttribute('aria-valuemin', String(Math.round(min)));
+    el.setAttribute('aria-valuemax', String(Math.round(max)));
+    el.setAttribute('aria-valuenow', String(Math.round(now)));
+    el.setAttribute('aria-valuetext', fmtDay(now));
+  };
+  setSlider(navHL, G.start, w.b - minS, w.a);
+  setSlider(navHR, w.a + minS, G.end, w.b);
+}
+let navDrag = null;
+navTrack.addEventListener('pointerdown', e => {
+  const G = gz.G;
+  if (!canZoom(G) || (e.pointerType === 'mouse' && e.button !== 0)) return;
+  const rect = navTrack.getBoundingClientRect(), full = G.end - G.start;
+  let w = currentWindow(G), kind;
+  const handle = e.target.closest('.nav-handle');
+  if (handle) kind = navWin.classList.contains('narrow') ? 'either' : handle === navHL ? 'l' : 'r';
+  else if (e.target.closest('#nav-win')) kind = 'pan';
+  else {
+    /* a tap beside the window moves it there */
+    const c = G.start + ((e.clientX - rect.left) / rect.width) * full, span = w.b - w.a;
+    setZoom(c - span / 2, c + span / 2);
+    drawGrowth();
+    w = currentWindow(G);
+    kind = 'pan';
+  }
+  navDrag = { id: e.pointerId, kind, x0: e.clientX, a0: w.a, b0: w.b, k: full / Math.max(1, rect.width), minS: Math.min(full, MIN_SPAN) };
+  try { navTrack.setPointerCapture(e.pointerId); } catch (err) { /* fine without capture */ }
+});
+navTrack.addEventListener('pointermove', e => {
+  const d = navDrag;
+  if (!d || e.pointerId !== d.id) return;
+  const dx = e.clientX - d.x0, dd = dx * d.k;
+  if (d.kind === 'either') { if (Math.abs(dx) < 3) return; d.kind = dx < 0 ? 'l' : 'r'; }
+  const G = gz.G;
+  if (d.kind === 'l') queueZoom(Math.max(G.start, Math.min(d.b0 - d.minS, d.a0 + dd)), d.b0);
+  else if (d.kind === 'r') queueZoom(d.a0, Math.min(G.end, Math.max(d.a0 + d.minS, d.b0 + dd)));
+  else { const span = d.b0 - d.a0, a = Math.max(G.start, Math.min(G.end - span, d.a0 + dd)); queueZoom(a, a + span); }
+});
+const endNavDrag = e => { if (navDrag && e.pointerId === navDrag.id) navDrag = null; };
+navTrack.addEventListener('pointerup', endNavDrag);
+navTrack.addEventListener('pointercancel', endNavDrag);
+function navKey(e, which) {
+  const G = gz.G;
+  if (!canZoom(G)) return;
+  const w = currentWindow(G), minS = Math.min(G.end - G.start, MIN_SPAN);
+  const step = { ArrowLeft: -30, ArrowDown: -30, ArrowRight: 30, ArrowUp: 30, PageDown: -365, PageUp: 365 }[e.key];
+  let { a, b } = w;
+  if (which === 'l') {
+    if (e.key === 'Home') a = G.start; else if (e.key === 'End') a = b - minS; else if (step) a = Math.max(G.start, Math.min(b - minS, a + step)); else return;
+  } else {
+    if (e.key === 'Home') b = a + minS; else if (e.key === 'End') b = G.end; else if (step) b = Math.min(G.end, Math.max(a + minS, b + step)); else return;
+  }
+  e.preventDefault();
+  setZoom(a, b);
+  drawGrowth();
+}
+navHL.addEventListener('keydown', e => navKey(e, 'l'));
+navHR.addEventListener('keydown', e => navKey(e, 'r'));
+
+/* ---- gestures on the chart: one finger reads values, two fingers zoom and slide ----
+   The touch layer stays in place while the chart under it is redrawn, so a pinch never loses its fingers. */
+const gTouch = $('#growth-touch');
+const ptrs = new Map();
+let gest = null, holdUntilClear = false, lastTap = null, gestureStart = null, lastPtrType = 'mouse';
+function zoomAround(clientX) {
+  const G = gz.G;
+  if (!canZoom(G) || !gz.api) return;
+  const w = currentWindow(G);
+  if (isZoomed(G, w)) { resetZoom(); drawGrowth(); return; }
+  const P = gz.api.plot(), f = Math.max(0, Math.min(1, (clientX - P.left) / P.width));
+  const c = w.a + f * (w.b - w.a), span = Math.max(MIN_SPAN, (w.b - w.a) / 3);
+  setZoom(c - f * span, c - f * span + span);
+  drawGrowth();
+}
+function startPinch() {
+  const [p, q] = [...ptrs.values()];
+  const P = gz.api.plot(), w = currentWindow(gz.G), mx = (p.x + q.x) / 2;
+  gest = { kind: 'pinch', P, d0: Math.max(24, Math.hypot(p.x - q.x, p.y - q.y)), a0: w.a, b0: w.b,
+    dm: w.a + ((mx - P.left) / P.width) * (w.b - w.a) };
+  gz.api.hide();
+}
+function movePinch() {
+  const [p, q] = [...ptrs.values()];
+  const d = Math.max(24, Math.hypot(p.x - q.x, p.y - q.y)), mx = (p.x + q.x) / 2;
+  const span = ((gest.b0 - gest.a0) * gest.d0) / d;
+  const a = gest.dm - (span * (mx - gest.P.left)) / gest.P.width;
+  queueZoom(a, a + span);
+}
+gTouch.addEventListener('pointerdown', e => {
+  lastPtrType = e.pointerType;
+  if (!gz.api || (e.pointerType === 'mouse' && e.button !== 0)) return;
+  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, t0: e.timeStamp, type: e.pointerType });
+  if (e.pointerType !== 'touch') { try { gTouch.setPointerCapture(e.pointerId); } catch (err) { /* ok */ } }
+  if (ptrs.size === 2 && canZoom(gz.G)) { startPinch(); return; }
+  if (ptrs.size > 1) return;
+  const G = gz.G, w = G ? currentWindow(G) : null;
+  gest = e.pointerType === 'mouse' && G && isZoomed(G, w) ? { kind: 'drag', x0: e.clientX, a0: w.a, b0: w.b, moved: false, P: gz.api.plot() } : { kind: 'scrub' };
+  gz.api.show(gz.api.idxAt(e.clientX));
+});
+gTouch.addEventListener('pointermove', e => {
+  if (!gz.api) return;
+  const p = ptrs.get(e.pointerId);
+  if (!p) { if (e.pointerType === 'mouse') gz.api.show(gz.api.idxAt(e.clientX)); return; }
+  p.x = e.clientX; p.y = e.clientY;
+  if (gest && gest.kind === 'pinch') { if (ptrs.size >= 2) movePinch(); return; }
+  if (holdUntilClear || ptrs.size > 1) return;
+  if (gest && gest.kind === 'drag') {
+    if (Math.abs(e.clientX - gest.x0) > 3) gest.moved = true;
+    if (gest.moved) {
+      const span = gest.b0 - gest.a0, a = gest.a0 - ((e.clientX - gest.x0) / gest.P.width) * span;
+      gz.api.hide();
+      queueZoom(a, a + span);
+      return;
+    }
+  }
+  gz.api.show(gz.api.idxAt(e.clientX));
+});
+function endPointer(e) {
+  const p = ptrs.get(e.pointerId);
+  ptrs.delete(e.pointerId);
+  if (gest && gest.kind === 'pinch') {
+    if (ptrs.size < 2) { gest = null; holdUntilClear = ptrs.size > 0; }
+    return;
+  }
+  if (!ptrs.size) {
+    const wasHold = holdUntilClear;
+    holdUntilClear = false;
+    if (e.type === 'pointerup' && p && p.type === 'touch' && !wasHold && gest && gest.kind === 'scrub' &&
+        Math.hypot(e.clientX - p.x0, e.clientY - p.y0) < 12 && e.timeStamp - p.t0 < 320) {
+      /* double tap: zoom in around that spot, or back out to everything */
+      if (lastTap && e.timeStamp - lastTap.t < 360 && Math.abs(e.clientX - lastTap.x) < 36) { lastTap = null; zoomAround(e.clientX); }
+      else lastTap = { t: e.timeStamp, x: e.clientX };
+    }
+    gest = null;
+  }
+}
+gTouch.addEventListener('pointerup', endPointer);
+gTouch.addEventListener('pointercancel', endPointer);
+gTouch.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse' && !ptrs.size && gz.api) gz.api.hide(); });
+/* Browsers also report a double tap as a double click; the touch code above already handled it. */
+gTouch.addEventListener('dblclick', e => { if (lastPtrType === 'mouse') zoomAround(e.clientX); });
+/* Keep the page itself from zooming when two fingers are on the chart (iPhone Safari needs both of these). */
+const twoFingers = e => { if (e.touches && e.touches.length > 1 && canZoom(gz.G)) e.preventDefault(); };
+gTouch.addEventListener('touchstart', twoFingers, { passive: false });
+gTouch.addEventListener('touchmove', twoFingers, { passive: false });
+/* Safari's trackpad pinch on a Mac arrives as gesture events; on iPhone the pointer code above handles it. */
+gTouch.addEventListener('gesturestart', e => {
+  e.preventDefault();
+  if (ptrs.size > 1 || !gz.api || !canZoom(gz.G)) { gestureStart = null; return; }
+  const w = currentWindow(gz.G), P = gz.api.plot(), x = e.clientX || P.left + P.width / 2;
+  gestureStart = { w, P, x, dm: w.a + ((x - P.left) / P.width) * (w.b - w.a) };
+});
+gTouch.addEventListener('gesturechange', e => {
+  e.preventDefault();
+  if (!gestureStart || ptrs.size > 1 || (gest && gest.kind === 'pinch') || !(e.scale > 0)) return;
+  const g = gestureStart, span = (g.w.b - g.w.a) / e.scale, a = g.dm - (span * (g.x - g.P.left)) / g.P.width;
+  queueZoom(a, a + span);
+});
+gTouch.addEventListener('gestureend', e => { e.preventDefault(); gestureStart = null; });
+/* Trackpad pinch in Chrome and Firefox (ctrl + wheel), and sideways swipes to slide a zoomed chart. */
+gTouch.addEventListener('wheel', e => {
+  const G = gz.G;
+  if (!gz.api || !canZoom(G)) return;
+  const w = currentWindow(G), span = w.b - w.a, P = gz.api.plot();
+  const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? P.width : 1;
+  if (e.ctrlKey) {
+    e.preventDefault();
+    const f = Math.max(0, Math.min(1, (e.clientX - P.left) / P.width)), dm = w.a + f * span;
+    const ns = span * Math.exp(Math.max(-1, Math.min(1, e.deltaY * unit * 0.01)));
+    queueZoom(dm - f * ns, dm - f * ns + ns);
+  } else if (Math.abs(e.deltaX) > Math.abs(e.deltaY) && isZoomed(G, w)) {
+    e.preventDefault();
+    const dd = ((e.deltaX * unit) / P.width) * span;
+    queueZoom(w.a + dd, w.b + dd);
+  }
+}, { passive: false });
 
 function renderBenchmark(M) {
   if (mode === 'welcome') return;
@@ -957,7 +1299,7 @@ async function openFile(f) {
     state.updatedAt = Date.now();
     mode = 'data';
     Object.assign(file, { name: got.name, appFormat: true, dirty: false, savedAt: null, openedAt: Date.now(), source: got.name });
-    editing = null; openYears.clear(); proj.annualTouched = false;
+    editing = null; openYears.clear(); resetZoom(); proj.annualTouched = false;
     writeCopy();
     setTab('overview');
     toast('Opened ' + got.name + ': ' + plural(r.deposits.length, 'deposit', 'deposits') + (r.skipped ? '. ' + plural(r.skipped, 'row', 'rows') + ' couldn’t be read and ' + (r.skipped === 1 ? 'was' : 'were') + ' left out' : ''), prev);
@@ -979,6 +1321,8 @@ function buildWorkbook(st, M) {
   const first = deps.length ? excelSerial(deps[0].d) : null;
   const vDate = M.hasValue ? excelSerial(st.value.d) : null;
   const yearsNow = first != null ? (Math.max(excelSerial(today), vDate || 0) - first) / 365.25 : null;
+  /* Filled in once the yearly table's rows are known: the average of those yearly totals. */
+  const avgRow = [S('Average deposit per calendar year'), ''];
   const summary = [
     [S('Investment summary', 'title')],
     [S('The figures in this column update by themselves in Excel. The Investment Tracker app reads the Deposits and Values sheets.', 'note')],
@@ -988,7 +1332,7 @@ function buildWorkbook(st, M) {
     [S('Total deposited'), F('SUM(Deposits!B:B)', round2(M.total), 'money')],
     [S('First deposit'), F('IF(COUNT(Deposits!A:A)>0,MIN(Deposits!A:A),"")', first != null ? first : '', 'date')],
     [S('Years since first deposit'), F('IF(B7="","",(MAX(TODAY(),N(B5))-B7)/365.25)', yearsNow != null ? yearsNow : '', 'decimal')],
-    [S('Average deposit per year'), F('IF(N(B8)>0,B6/B8,"")', M.avgPerYear != null ? M.avgPerYear : '', 'money')],
+    avgRow,
     [S('Deposits up to the value date'), F('IF(B5="","",SUMIFS(Deposits!B:B,Deposits!A:A,"<="&B5))', M.hasValue ? round2(M.netCounted) : '', 'money')],
     [S('Gain'), F('IF(B5="","",B4-B10)', M.gain != null ? M.gain : '', 'money')],
     [S('ROI'), F('IF(N(B10)>0,B11/B10,"")', M.roi != null ? M.roi : '', 'percent')],
@@ -1008,6 +1352,7 @@ function buildWorkbook(st, M) {
       F('SUMIFS(Deposits!$B:$B,Deposits!$A:$A,">="&DATE(A' + row + ',1,1),Deposits!$A:$A,"<"&DATE(A' + row + '+1,1,1))', r.sum, 'money'),
       F('SUM($B$' + y0 + ':B' + row + ')', r.cum, 'money')]);
   });
+  if (M.byYear.length) avgRow[1] = F('IFERROR(AVERAGE(B' + y0 + ':B' + (y0 + M.byYear.length - 1) + '),"")', M.avgPerYear, 'money');
   const settings = [
     [S('Setting', 'header'), S('Value', 'header')],
     [S('Currency'), st.settings.cur],
@@ -1079,15 +1424,36 @@ async function deliver(blob, name) {
 }
 
 /* ---------- import dialog: add many deposits, or read someone's own workbook ---------- */
-const imp = { mode: 'add', tab: 'paste', fmt: 'auto', dateCol: null, amountCol: null, delim: null, src: null, sheetIdx: 0, res: null, skipDup: true, toAdd: [], openName: '', guess: null };
+/* target: 'deposits' (the ledger) or 'values' (your portfolio's value on past dates) */
+const imp = { mode: 'add', target: 'deposits', tab: 'paste', fmt: 'auto', dateCol: null, amountCol: null, delim: null, src: null, sheetIdx: 0, res: null, skipDup: true, toAdd: [], openName: '', guess: null };
+const IMP_TEXT = {
+  deposits: { title: 'Add many deposits', label: 'In Excel, select your date and amount columns, copy them, then paste here.', placeholder: 'Date\tAmount\n15/01/2024\t500\n15/02/2024\t500\n20/03/2024\t1,250',
+    drop: 'Excel (.xlsx) or CSV. The deposits in it are added to your ledger.', replace: 'Replace my existing deposits' },
+  values: { title: 'Add many values', label: 'In Excel, select a date column and your portfolio value on each date, copy them, then paste here.', placeholder: 'Date\tValue\n31/01/2024\t10,250\n29/02/2024\t10,610\n31/03/2024\t11,020',
+    drop: 'Excel (.xlsx) or CSV with a date column and a value column. The values are added to your value history.', replace: 'Replace my saved values' }
+};
+function importTabs() { return imp.target === 'values' ? ['paste', 'file'] : ['paste', 'file', 'recurring']; }
 const dlgImport = $('#dlg-import');
 function openDialog(d) { if (typeof d.showModal === 'function') { if (!d.open) d.showModal(); } else d.setAttribute('open', ''); }
 function closeDialog(d) { if (typeof d.close === 'function') { if (d.open) d.close(); } else d.removeAttribute('open'); }
 function resetImport() { Object.assign(imp, { fmt: 'auto', dateCol: null, amountCol: null, delim: null, res: null, toAdd: [], sheetIdx: 0 }); }
-function openImport(tabName) {
+function setImportTarget(target) {
+  target = target === 'values' ? 'values' : 'deposits';
+  if (target !== imp.target) { $('#imp-text').value = ''; $('#imp-file').value = ''; imp.src = null; }
+  imp.target = target;
+  const T = IMP_TEXT[target];
+  $('#imp-title').textContent = T.title;
+  $('#imp-text-label').textContent = T.label;
+  $('#imp-text').placeholder = T.placeholder;
+  $('#imp-drop-note').textContent = T.drop;
+  $('#imp-replace-label').textContent = T.replace;
+  $('#tab-recurring').hidden = target === 'values';
+}
+function openImport(tabName, target) {
   resetImport();
+  setImportTarget(target);
   imp.mode = 'add'; imp.src = null; imp.guess = null;
-  $('#imp-title').textContent = 'Add many deposits';
+  if (!importTabs().includes(tabName)) tabName = 'paste';
   $('#imp-tabs').hidden = false;
   $('#imp-drop').hidden = false;
   $('#imp-value').hidden = true;
@@ -1100,6 +1466,7 @@ function openImport(tabName) {
 }
 function openImportForFile(got) {
   resetImport();
+  setImportTarget('deposits');
   imp.mode = 'open';
   imp.openName = got.name;
   if (got.kind === 'xlsx') {
@@ -1149,8 +1516,33 @@ function analyzeImport() {
   }
   renderImportPreview();
 }
-const colName = (i, header) => 'Column ' + String.fromCharCode(65 + (i % 26)) + (header && header[i] ? ' · ' + String(header[i]).slice(0, 24) : '');
+const colName = (i, header) => { const L = String.fromCharCode(65 + (i % 26)); return header && header[i] ? String(header[i]).slice(0, 20) + ' (' + L + ')' : 'Column ' + L; };
+/* Column pickers and date-order controls shared by the deposits and values previews. */
+function columnOptions(r, amountLabel) {
+  const out = [];
+  const opts = h('div', { class: 'pv-opts' });
+  const mkSel = (id, label, value, onChange) => {
+    const sel = h('select', { id });
+    for (let i = 0; i < r.ncol; i++) sel.append(h('option', { value: String(i) }, colName(i, r.header)));
+    sel.value = String(value);
+    sel.addEventListener('change', () => onChange(+sel.value));
+    return h('label', { class: 'field', for: id }, h('span', { class: 'field-label' }, label), sel);
+  };
+  opts.append(mkSel('imp-dcol', 'Dates from', r.dateCol, v => { imp.dateCol = v; if (imp.amountCol === v) imp.amountCol = null; imp.delim = r.delim || null; analyzeImport(); }));
+  opts.append(mkSel('imp-acol', amountLabel, r.amountCol, v => { imp.amountCol = v; if (imp.dateCol === v) imp.dateCol = null; imp.delim = r.delim || null; analyzeImport(); }));
+  if (r.hasNumDates) {
+    const fsel = h('select', { id: 'imp-fmt' }, h('option', { value: 'dmy' }, 'DD/MM/YYYY'), h('option', { value: 'mdy' }, 'MM/DD/YYYY'));
+    fsel.value = r.fmt;
+    fsel.addEventListener('change', () => { imp.fmt = fsel.value; analyzeImport(); });
+    opts.append(h('label', { class: 'field', for: 'imp-fmt' }, h('span', { class: 'field-label' }, r.fmtDetected && imp.fmt === 'auto' ? 'Dates read as (detected)' : 'Dates read as'), fsel));
+  }
+  out.push(opts);
+  if (r.fmtAmbiguous && imp.fmt === 'auto') out.push(h('p', { class: 'warn-note' }, 'Every date here could be read either way, so I assumed ' + (r.fmt === 'mdy' ? 'month / day / year' : 'day / month / year') + '. Check the dates below and switch if they look wrong.'));
+  if (r.fmtConflict) out.push(h('p', { class: 'warn-note' }, 'Some dates only make sense as day / month and others as month / day. Rows that don’t fit the chosen order are skipped.'));
+  return out;
+}
 function renderImportPreview() {
+  if (imp.target === 'values') { renderValuesPreview(); return; }
   const pv = $('#imp-preview'), go = $('#imp-go');
   const replaceWrap = $('#imp-replace-wrap');
   replaceWrap.hidden = imp.mode === 'open' || mode !== 'data' || !state.deposits.length;
@@ -1178,27 +1570,7 @@ function renderImportPreview() {
   const items = r.items.map(it => { const dup = existing.has(it.d + '|' + it.a.toFixed(2)); if (dup) dups++; return Object.assign({ dup }, it); });
   const toAdd = items.filter(it => !(it.dup && imp.skipDup));
   imp.toAdd = toAdd;
-  if (!r.recurring && r.ncol > 1 && !r.problem) {
-    const opts = h('div', { class: 'pv-opts' });
-    const mkSel = (id, label, value, onChange) => {
-      const sel = h('select', { id });
-      for (let i = 0; i < r.ncol; i++) sel.append(h('option', { value: String(i) }, colName(i, r.header)));
-      sel.value = String(value);
-      sel.addEventListener('change', () => onChange(+sel.value));
-      return h('label', { class: 'field', for: id }, h('span', { class: 'field-label' }, label), sel);
-    };
-    opts.append(mkSel('imp-dcol', 'Dates from', r.dateCol, v => { imp.dateCol = v; if (imp.amountCol === v) imp.amountCol = null; imp.delim = r.delim || null; analyzeImport(); }));
-    opts.append(mkSel('imp-acol', 'Amounts from', r.amountCol, v => { imp.amountCol = v; if (imp.dateCol === v) imp.dateCol = null; imp.delim = r.delim || null; analyzeImport(); }));
-    if (r.hasNumDates) {
-      const fsel = h('select', { id: 'imp-fmt' }, h('option', { value: 'dmy' }, 'Day / month / year'), h('option', { value: 'mdy' }, 'Month / day / year'));
-      fsel.value = r.fmt;
-      fsel.addEventListener('change', () => { imp.fmt = fsel.value; analyzeImport(); });
-      opts.append(h('label', { class: 'field', for: 'imp-fmt' }, h('span', { class: 'field-label' }, r.fmtDetected && imp.fmt === 'auto' ? 'Dates read as (detected)' : 'Dates read as'), fsel));
-    }
-    pv.append(opts);
-    if (r.fmtAmbiguous && imp.fmt === 'auto') pv.append(h('p', { class: 'warn-note' }, 'Every date here could be read either way, so I assumed ' + (r.fmt === 'mdy' ? 'month / day / year' : 'day / month / year') + '. Check the dates below and switch if they look wrong.'));
-    if (r.fmtConflict) pv.append(h('p', { class: 'warn-note' }, 'Some dates only make sense as day / month and others as month / day. Rows that don’t fit the chosen order are skipped.'));
-  }
+  if (!r.recurring && r.ncol > 1 && !r.problem) pv.append(...columnOptions(r, 'Amounts from'));
   if (items.length || r.errors.length) {
     const sumTxt = [h('strong', null, plural(toAdd.length, 'entry', 'entries')), ' ready' + (imp.mode === 'open' ? '' : ' to add')];
     if (toAdd.length) sumTxt.push(', totaling ' + money(sumOf(toAdd, x => x.a), { dec: 0 }));
@@ -1227,9 +1599,93 @@ function renderImportPreview() {
   go.disabled = toAdd.length === 0;
   go.textContent = toAdd.length ? (imp.mode === 'open' ? 'Use these ' + plural(toAdd.length, 'entry', 'entries') : (replace ? 'Replace with ' : 'Add ') + plural(toAdd.length, 'entry', 'entries')) : (imp.mode === 'open' ? 'Use these deposits' : 'Add deposits');
 }
+/* Values: one per date. A date that's already saved gets the new value; the latest date becomes your current value. */
+function renderValuesPreview() {
+  const pv = $('#imp-preview'), go = $('#imp-go');
+  const replaceWrap = $('#imp-replace-wrap');
+  replaceWrap.hidden = mode !== 'data' || !state.history.length;
+  const replace = !replaceWrap.hidden && $('#imp-replace').checked;
+  pv.replaceChildren();
+  imp.toAdd = [];
+  go.disabled = true;
+  go.textContent = 'Add values';
+  const r = imp.res;
+  if (!r) return;
+  if (r.problem) {
+    pv.append(h('p', { class: 'field-error' }, { empty: 'Nothing to read yet.', nodate: 'I couldn’t find a column of dates. Check that the date column came along when you copied.', noamount: 'I found dates but no column of values next to them.' }[r.problem]));
+    return;
+  }
+  if (r.ncol > 1) pv.append(...columnOptions(r, 'Values from'));
+  const saved = new Map();
+  if (!replace && mode === 'data') { for (const x of state.history) saved.set(x.d, x.a); if (state.value && !saved.has(state.value.d)) saved.set(state.value.d, state.value.a); }
+  const lastIdx = new Map();
+  r.items.forEach((it, i) => lastIdx.set(it.d, i));
+  const toAdd = [], rows = [];
+  let nRepl = 0, nSame = 0, nTwice = 0, nNeg = 0;
+  r.items.forEach((it, i) => {
+    let st = '', cls = '';
+    if (it.a < 0) { st = 'A value can’t be negative'; cls = 'err'; nNeg++; }
+    else if (lastIdx.get(it.d) !== i) { st = 'Same date again further down, skipped'; cls = 'dup'; nTwice++; }
+    else if (saved.has(it.d) && Math.abs(saved.get(it.d) - it.a) < 0.005) { st = 'Already saved'; cls = 'dup'; nSame++; }
+    else {
+      if (saved.has(it.d)) { st = 'Replaces ' + money(saved.get(it.d), { dec: 0 }); cls = 'repl'; nRepl++; }
+      toAdd.push(it);
+    }
+    rows.push({ line: it.line, d: fmtDate(it.d), a: money(it.a, {}), st, cls });
+  });
+  for (const e of r.errors) rows.push({ line: e.line, d: String(e.raw[0] == null ? '' : e.raw[0]), a: String(e.raw[1] == null ? '' : e.raw[1]), st: e.reason === 'date' ? 'Couldn’t read the date' : 'Couldn’t read the value', cls: 'err' });
+  rows.sort((x, y) => (x.line || 0) - (y.line || 0));
+  imp.toAdd = toAdd;
+  if (rows.length) {
+    const extra = [];
+    if (nRepl) extra.push(plural(nRepl, 'replaces a value', 'replace values') + ' you already saved for that date');
+    if (nSame) extra.push(plural(nSame, 'is', 'are') + ' already saved');
+    if (nTwice) extra.push(plural(nTwice, 'date appears', 'dates appear') + ' twice, so the lower row is used');
+    if (nNeg) extra.push(plural(nNeg, 'row has', 'rows have') + ' a negative value');
+    if (r.errors.length) extra.push(plural(r.errors.length, 'row', 'rows') + ' couldn’t be read');
+    if (r.header) extra.push('the header row was skipped');
+    if (r.skipped) extra.push(plural(r.skipped, 'row', 'rows') + ' without a date or value ' + (r.skipped === 1 ? 'was' : 'were') + ' skipped');
+    pv.append(h('p', { class: 'pv-summary' }, h('strong', null, plural(toAdd.length, 'value', 'values')), ' ready to add.', extra.length ? ' ' + extra.join('; ').replace(/^./, c => c.toUpperCase()) + '.' : ''));
+    if (toAdd.length) {
+      const newest = toAdd.reduce((m, x) => (x.d > m.d ? x : m), toAdd[0]);
+      const curD = replace || mode !== 'data' || !state.value ? '' : state.value.d;
+      if (newest.d >= curD) pv.append(h('p', { class: 'note' }, 'Your current value becomes ' + money(newest.a, { dec: 0 }) + ', from ' + fmtDate(newest.d) + ', the latest date here.'));
+    }
+    const shown = rows.slice(0, 160);
+    pv.append(h('div', { class: 'table-scroll' }, h('table', { class: 'num-table pv-table' },
+      h('thead', null, h('tr', null, h('th', { scope: 'col' }, 'Date'), h('th', { scope: 'col' }, 'Value'), h('th', { scope: 'col' }, ''))),
+      h('tbody', null, shown.map(x => h('tr', null, h('td', null, x.d), h('td', null, x.a), h('td', { class: 'st ' + x.cls }, x.st)))))));
+    if (rows.length > shown.length) pv.append(h('p', { class: 'pv-more' }, 'Showing the first ' + shown.length + ' of ' + rows.length + ' rows.'));
+  }
+  go.disabled = !toAdd.length;
+  if (toAdd.length) go.textContent = (replace ? 'Replace with ' : 'Add ') + plural(toAdd.length, 'value', 'values');
+}
+async function runValuesImport(items) {
+  const replace = !$('#imp-replace-wrap').hidden && $('#imp-replace').checked;
+  if (replace) {
+    closeDialog(dlgImport);
+    const ok = await confirmBox('Replace your saved values?', 'Your ' + plural(state.history.length, 'saved value', 'saved values') + ' will be removed and replaced with ' + plural(items.length, 'value', 'values') + ' from this import.', 'Replace', true);
+    if (!ok) { openDialog(dlgImport); return; }
+  }
+  const prev = commitData(s => {
+    const byDate = new Map();
+    if (!replace) { for (const x of s.history) byDate.set(x.d, x.a); if (s.value && !byDate.has(s.value.d)) byDate.set(s.value.d, s.value.a); }
+    for (const it of items) byDate.set(it.d, it.a);
+    s.history = [...byDate].map(([d, a]) => ({ d, a })).sort((x, y) => (x.d < y.d ? -1 : 1)).slice(-3000);
+    const last = s.history[s.history.length - 1];
+    s.value = last ? { a: last.a, d: last.d } : null;
+  });
+  closeDialog(dlgImport);
+  $('#imp-text').value = '';
+  $('#imp-file').value = '';
+  imp.src = null;
+  $('#imp-file-status').textContent = '';
+  toast((replace ? 'Replaced with ' : 'Added ') + plural(items.length, 'value', 'values'), prev);
+}
 async function runImport() {
   const items = imp.toAdd || [];
   if (!items.length) return;
+  if (imp.target === 'values') { await runValuesImport(items); return; }
   if (imp.mode === 'open') {
     let value = null;
     const va = parseInputAmount($('#imp-val-amount').value), vd = $('#imp-val-date').value;
@@ -1254,7 +1710,7 @@ async function runImport() {
     mode = 'data';
     Object.assign(file, { name: null, appFormat: false, dirty: true, savedAt: null, openedAt: Date.now(), source: imp.openName });
     closeDialog(dlgImport);
-    editing = null; openYears.clear(); proj.annualTouched = false;
+    editing = null; openYears.clear(); resetZoom(); proj.annualTouched = false;
     writeCopy();
     setTab('overview');
     toast('Loaded ' + plural(items.length, 'entry', 'entries') + ' from ' + imp.openName + '. Save to create your tracker file.', prev);
@@ -1285,7 +1741,8 @@ async function handleAddFile(f) {
   try {
     const got = await readAnyFile(f);
     if (got.kind === 'xlsx') {
-      const wb = isAppWorkbook(got.wb) ? { sheets: got.wb.sheets.filter(s => /^deposits$/i.test(String(s.name).trim())) } : got.wb;
+      const want = imp.target === 'values' ? 'values' : 'deposits';
+      const wb = isAppWorkbook(got.wb) ? { sheets: got.wb.sheets.filter(s => String(s.name).trim().toLowerCase() === want) } : got.wb;
       imp.src = { kind: 'sheets', sheets: wb.sheets.length ? wb.sheets : got.wb.sheets };
       imp.sheetIdx = Math.max(0, bestDepositSheet({ sheets: imp.src.sheets }, readOpts()));
       $('#imp-file-status').textContent = f.name + (imp.src.sheets.length > 1 ? ' · using the “' + imp.src.sheets[imp.sheetIdx].name + '” sheet' : '');
@@ -1326,12 +1783,13 @@ const actions = {
     const prev = snapshot();
     state = emptyState(); mode = 'data';
     Object.assign(file, { name: null, appFormat: false, dirty: false, savedAt: null, openedAt: null, source: null });
+    resetZoom();
     writeCopy();
     setTab('deposits');
     toast('New tracker started. Add your deposits, then save to Excel.', prev);
     setTimeout(() => $('#add-amount').focus(), 60);
   },
-  'show-example': () => { state = makeExample(todayDay()); mode = 'example'; Object.assign(file, { name: null, appFormat: false, dirty: false, savedAt: null, openedAt: null, source: null }); openYears.clear(); setTab('overview'); },
+  'show-example': () => { state = makeExample(todayDay()); mode = 'example'; Object.assign(file, { name: null, appFormat: false, dirty: false, savedAt: null, openedAt: null, source: null }); openYears.clear(); resetZoom(); setTab('overview'); },
   'close-file': async () => {
     if (mode === 'data' && file.dirty) {
       closeDialog($('#dlg-settings'));
@@ -1341,7 +1799,7 @@ const actions = {
     const settings = { cur: state.settings.cur, spx: null };
     state = emptyState(); state.settings = settings; mode = 'welcome';
     Object.assign(file, { name: null, appFormat: false, dirty: false, savedAt: null, openedAt: null, source: null });
-    editing = null; openYears.clear();
+    editing = null; openYears.clear(); resetZoom();
     writeCopy();
     closeDialog($('#dlg-settings'));
     setTab('overview');
@@ -1353,11 +1811,12 @@ const actions = {
     dropCopy(); keepCopy = false;
     state = emptyState(); mode = 'welcome';
     Object.assign(file, { name: null, appFormat: false, dirty: false, savedAt: null, openedAt: null, source: null });
-    editing = null; openYears.clear();
+    editing = null; openYears.clear(); resetZoom();
     setTab('overview');
     toast('Erased from this app.');
   },
-  'open-import': btn => openImport(btn.dataset.tab),
+  'open-import': btn => openImport(btn.dataset.tab, btn.dataset.target),
+  'zoom-preset': btn => { resetZoom(); zoom.preset = btn.dataset.k; drawGrowth(); },
   'focus-value': () => { setTab('overview'); const el = $('#val-amount'); setTimeout(() => el.focus(), 50); },
   'toggle-history': () => { histOpen = !histOpen; renderValueCard(lastM); },
   'del-snap': btn => {
@@ -1499,10 +1958,10 @@ $('#p-annual').addEventListener('blur', e => { e.target.value = plain(proj.annua
 $$('#imp-tabs [role="tab"]').forEach(t => {
   t.addEventListener('click', () => setImportTab(t.dataset.tab));
   t.addEventListener('keydown', e => {
-    const order = ['paste', 'file', 'recurring'];
+    const order = importTabs();
     if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
       e.preventDefault();
-      const i = (order.indexOf(imp.tab) + (e.key === 'ArrowRight' ? 1 : 2)) % 3;
+      const i = (order.indexOf(imp.tab) + (e.key === 'ArrowRight' ? 1 : order.length - 1)) % order.length;
       setImportTab(order[i]); $('#tab-' + order[i]).focus();
     }
   });

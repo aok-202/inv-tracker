@@ -2,7 +2,7 @@
    It only ever fetches files from this same site, and it never sees your Excel file or numbers.
    spx-data.js is fetched fresh from this site when online (the daily GitHub job updates it),
    with the saved copy used offline. When you change any other app file, change VERSION. */
-const VERSION = '2026-11-06.1';
+const VERSION = '2026-11-07.1';
 const CACHE = 'investment-tracker-' + VERSION;
 const FILES = ['./', 'index.html', 'styles.css', 'spx-data.js', 'calc.js', 'xlsx.js', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png'];

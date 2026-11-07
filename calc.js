@@ -89,7 +89,6 @@ function computeMetrics(st, A, today) {
   M.last = deps.length ? deps[deps.length - 1].t : null;
   const endDay = Math.max(today, vDay);
   M.years = M.first != null ? Math.max(0, (endDay - M.first) / 365.25) : null;
-  M.avgPerYear = M.years > 0 ? M.total / M.years : null;
   M.largest = deps.reduce((m, d) => (d.a > (m ? m.a : 0) ? d : m), null);
 
   const counted = deps.filter(d => d.t <= vDay);
@@ -147,6 +146,10 @@ function computeMetrics(st, A, today) {
       M.byYear.push({ year: y, sum: round2(r.sum), n: r.n, cum: round2(cum), ytd: y === cy });
     }
   }
+  /* Average per year = the average of the calendar-year totals above (every year from your first
+     deposit's year to this one, including any year with nothing in it). */
+  M.avgPerYear = M.byYear.length ? M.total / M.byYear.length : null;
+  M.avgYears = M.byYear.length ? { n: M.byYear.length, y0: M.byYear[0].year, y1: M.byYear[M.byYear.length - 1].year } : null;
   M.cy = cy;
   M.thisYear = years.get(cy) || { sum: 0, n: 0 };
   M.lastYear = years.get(cy - 1) || { sum: 0, n: 0 };
@@ -189,6 +192,79 @@ function growthSeries(M, history, A) {
   if (M.hasValue && M.vDay >= start) vmap.set(M.vDay, M.V);
   const vals = [...vmap.entries()].map(([t, a]) => ({ t, a })).sort((a, b) => a.t - b.t);
   return { pts, vals, start, end, spOK };
+}
+
+/* Your portfolio's value on day t, read off the straight line between the saved values around it. */
+function valueAt(vals, t) {
+  const n = vals.length;
+  if (!n || t < vals[0].t || t > vals[n - 1].t) return null;
+  if (n === 1) return vals[0].a;
+  let lo = 0, hi = n - 1;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (vals[mid].t <= t) lo = mid; else hi = mid; }
+  const p = vals[lo], q = vals[hi];
+  return q.t === p.t ? q.a : p.a + ((q.a - p.a) * (t - p.t)) / (q.t - p.t);
+}
+
+/* Your portfolio against the S&P 500 over a window of days [a, b].
+   It starts from a value that's known: nothing before your first deposit, or else your first
+   saved value inside the window. It ends at the last saved value inside the window. The S&P 500
+   side starts with the same money and gets the same deposits on the same days.
+   Return is the gain divided by the money at work, counting each deposit from its date (Modified Dietz). */
+function compareWindow(G, deps, A, a, b) {
+  const fromStart = a <= G.start;
+  const vin = G.vals.filter(v => v.t >= a && v.t <= b);
+  const out = { fromStart, t0: null, V0: null };
+  if (fromStart) { out.t0 = G.start; out.V0 = 0; }
+  else if (vin.length) { out.t0 = vin[0].t; out.V0 = vin[0].a; }
+  else { out.problem = 'novalue'; return out; }
+  const tr0 = trAt(A, out.t0);
+  if (tr0 == null) { out.problem = 'nosp'; out.t0 = null; return out; }
+  const end = vin.length ? vin[vin.length - 1] : null;
+  if (!end || end.t <= out.t0) { out.problem = vin.length ? 'onevalue' : 'novalue'; return out; }
+  const t1 = end.t, span = t1 - out.t0;
+  let units = out.V0 / tr0, net = 0, wsum = 0;
+  for (const d of deps) {
+    if (d.t > t1) break;
+    if (fromStart ? d.t < out.t0 : d.t <= out.t0) continue;
+    units += d.a / trAt(A, d.t);
+    net += d.a;
+    wsum += (d.a * (t1 - d.t)) / span;
+  }
+  const S1 = units * trAt(A, t1);
+  Object.assign(out, { t1, V1: end.a, S1, net, gainV: end.a - out.V0 - net, gainS: S1 - out.V0 - net, diff: end.a - S1 });
+  const base = out.V0 + wsum;
+  out.retV = base > 0 ? out.gainV / base : null;
+  out.retS = base > 0 ? out.gainS / base : null;
+  return out;
+}
+
+/* What the growth chart draws for a window of days [a, b]. When the window starts after your first
+   deposit, the S&P 500 line restarts from your value at the start of the comparison. */
+function windowSeries(G, deps, A, a, b) {
+  const cmp = compareWindow(G, deps, A, a, b);
+  const rebased = !cmp.fromStart && cmp.t0 != null;
+  const set = new Set([a, b]);
+  for (const p of G.pts) if (p.t > a && p.t < b) set.add(p.t);
+  for (const v of G.vals) if (v.t > a && v.t < b) set.add(v.t);
+  const days = [...set].sort((x, y) => x - y);
+  const pts = [];
+  let i = 0, cum = 0, uAll = 0, uReb = rebased ? cmp.V0 / trAt(A, cmp.t0) : 0;
+  for (const t of days) {
+    while (i < deps.length && deps[i].t <= t) {
+      const d = deps[i++];
+      cum += d.a;
+      if (G.spOK) uAll += d.a / trAt(A, d.t);
+      if (rebased && d.t > cmp.t0) uReb += d.a / trAt(A, d.t);
+    }
+    const sp = rebased ? (t >= cmp.t0 ? uReb * trAt(A, t) : null) : G.spOK ? uAll * trAt(A, t) : null;
+    pts.push({ t, dep: cum, sp });
+  }
+  const vin = G.vals.filter(v => v.t >= a && v.t <= b);
+  const vline = vin.map(v => [v.t, v.a]);
+  const va = valueAt(G.vals, a), vb = valueAt(G.vals, b);
+  if (va != null && !(vin.length && vin[0].t === a)) vline.unshift([a, va]);
+  if (vb != null && !(vin.length && vin[vin.length - 1].t === b)) vline.push([b, vb]);
+  return { a, b, pts, vline, vin, cmp, rebased };
 }
 
 function projectSeries(v0, annual, rate, years) {
@@ -387,14 +463,16 @@ function analyzeRows(rows, opts) {
   if (dateCol < 0) { res.problem = 'nodate'; return res; }
   if (amountCol < 0) { res.problem = 'noamount'; return res; }
 
-  let anyA = false, anyB = false, anyNum = false;
+  /* Rows that only make sense one way round (31/01 is day first, 01/31 is month first) decide the order.
+     A date that's impossible either way (31/13) is just an unreadable row. The larger side wins a disagreement. */
+  let nA = 0, nB = 0, anyNum = false;
   for (const r of rows) {
     const p = dateParts(r[dateCol]);
-    if (p && p.kind === 'num') { anyNum = true; if (p.a > 12) anyA = true; if (p.b > 12) anyB = true; }
+    if (p && p.kind === 'num') { anyNum = true; if (p.a > 12 && p.b <= 12) nA++; else if (p.b > 12 && p.a <= 12) nB++; }
   }
-  const detected = anyA && !anyB ? 'dmy' : anyB && !anyA ? 'mdy' : null;
+  const detected = nA || nB ? (nA >= nB ? 'dmy' : 'mdy') : null;
   const fmt = opts.fmt === 'dmy' || opts.fmt === 'mdy' ? opts.fmt : (detected || opts.localeFmt || 'dmy');
-  res.fmt = fmt; res.fmtDetected = detected; res.fmtAmbiguous = anyNum && !detected; res.fmtConflict = anyA && anyB; res.hasNumDates = anyNum;
+  res.fmt = fmt; res.fmtDetected = detected; res.fmtAmbiguous = anyNum && !detected; res.fmtConflict = nA > 0 && nB > 0; res.hasNumDates = anyNum;
 
   let vc = 0, vd = 0;
   for (const r of rows) {
@@ -538,4 +616,4 @@ function bestDepositSheet(wb, opts) {
   });
   return best;
 }
-if (typeof module !== 'undefined') module.exports = { ymdToIso, isoToDay, dayToIso, dayYear, buildAnchors, trAt, xirr, computeMetrics, growthSeries, projectSeries, recurringDates, dateParts, resolveDate, parseAmount, guessDecimalComma, numberCore, analyzeRows, parseTextTable, serialToIso, isAppWorkbook, readAppWorkbook, findCurrentValue, bestDepositSheet, FORMAT_MARK };
+if (typeof module !== 'undefined') module.exports = { ymdToIso, isoToDay, dayToIso, dayYear, buildAnchors, trAt, xirr, computeMetrics, growthSeries, valueAt, compareWindow, windowSeries, projectSeries, recurringDates, dateParts, resolveDate, parseAmount, guessDecimalComma, numberCore, analyzeRows, parseTextTable, serialToIso, isAppWorkbook, readAppWorkbook, findCurrentValue, bestDepositSheet, FORMAT_MARK };
