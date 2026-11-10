@@ -2,7 +2,7 @@
    It only ever fetches files from this same site, and it never sees your Excel file or numbers.
    spx-data.js is fetched fresh from this site when online (the daily GitHub job updates it),
    with the saved copy used offline. When you change any other app file, change VERSION. */
-const VERSION = '2026-11-07.4';
+const VERSION = '2026-11-10.1';
 const CACHE = 'investment-tracker-' + VERSION;
 /* The app can't run without these. */
 const FILES = ['./', 'index.html', 'styles.css', 'spx-data.js', 'calc.js', 'xlsx.js', 'app.js'];
@@ -22,23 +22,40 @@ self.addEventListener('activate', event => {
   );
 });
 const FRESH = ['spx-data.js'];
-async function freshFirst(req) {
-  const cache = await caches.open(CACHE);
-  try {
-    const stop = new AbortController();
-    const timer = setTimeout(() => stop.abort(), 3000);
-    const res = await fetch(req, { cache: 'no-cache', signal: stop.signal });
-    clearTimeout(timer);
-    if (res.ok) { await cache.put(req, res.clone()); return res; }
-  } catch (e) { /* offline or slow: use the saved copy */ }
-  return (await cache.match(req, { ignoreSearch: true })) || Response.error();
+/* The S&P prices: fresh from this site when it answers within 3 seconds, the saved copy otherwise.
+   A slow answer still finishes in the background and is saved, so the next look has it. */
+function saveFresh(req) {
+  return fetch(req, { cache: 'no-cache' }).then(async res => {
+    if (res.ok) await (await caches.open(CACHE)).put(req, res.clone());
+    return res;
+  });
 }
+async function freshFirst(req, net) {
+  const quick = await Promise.race([net.catch(() => null), new Promise(done => setTimeout(() => done(null), 3000))]);
+  if (quick && quick.ok) return quick;
+  return (await caches.match(req, { ignoreSearch: true })) || net.catch(() => Response.error());
+}
+/* The page can't download anything itself (its security rules forbid it), so it asks here for
+   the latest S&P prices: the same file from this same site, which also refreshes the saved copy. */
+self.addEventListener('message', event => {
+  const msg = event.data || {}, port = event.ports && event.ports[0];
+  if (msg.type !== 'spx-refresh' || !port) return;
+  const url = new URL('spx-data.js', self.registration.scope).href;
+  event.waitUntil(saveFresh(new Request(url))
+    .then(async res => { if (!res.ok) throw new Error('HTTP ' + res.status); port.postMessage({ ok: true, text: await res.text() }); })
+    .catch(err => port.postMessage({ ok: false, error: String((err && err.message) || err) })));
+});
 self.addEventListener('fetch', event => {
   const req = event.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
-  if (FRESH.some(f => url.pathname.endsWith('/' + f))) { event.respondWith(freshFirst(req)); return; }
+  if (FRESH.some(f => url.pathname.endsWith('/' + f))) {
+    const net = saveFresh(req);
+    event.waitUntil(net.catch(() => null));
+    event.respondWith(freshFirst(req, net));
+    return;
+  }
   event.respondWith(
     caches.match(req, { ignoreSearch: true }).then(hit => hit || fetch(req).then(res => {
       if (res.ok && res.type === 'basic') { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }

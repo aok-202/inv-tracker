@@ -190,6 +190,52 @@ function dropCopy() { if (!storageOK) return; try { localStorage.removeItem(COPY
 
 let anchors = buildAnchors(SPX, state.settings.spx);
 let anchorsKey = JSON.stringify(state.settings.spx);
+/* New S&P 500 prices, taken in without reloading the page. The text is this site's own
+   spx-data.js, fetched by the offline helper (sw.js) on request: the page itself can't download. */
+let spxChecked = 0, spxBusy = false, swChecked = Date.now();
+const spxCanCheck = () => PWA && 'serviceWorker' in navigator && !!navigator.serviceWorker.controller;
+function applySpx(text) {
+  const m = /const SPX = (\{[\s\S]*?\});/.exec(text || '');
+  if (!m) return false;
+  let d;
+  try { d = JSON.parse(m[1]); } catch (e) { return false; }
+  if (!d || !Array.isArray(d.tr) || !d.tr.length || !d.last || !/^\d{4}-\d{2}-\d{2}$/.test(d.last.d) || !(d.last.px > 0) || !(d.last.tr > 0)) return false;
+  if (!(d.last.d > SPX.last.d)) return false;
+  SPX.tr = d.tr;
+  SPX.last = d.last;
+  if (d.div != null) SPX.div = d.div;
+  anchorsKey = null;
+  return true;
+}
+function checkSpx(manual) {
+  if (!spxCanCheck()) {
+    if (manual) toast('Close the app fully and open it again to load the latest S&P 500 prices.', undefined, 6000);
+    return;
+  }
+  if (spxBusy) return;
+  spxBusy = true;
+  if (manual && lastM && mode !== 'welcome') renderBenchmark(lastM);
+  const ch = new MessageChannel();
+  let finished = false;
+  const finish = reply => {
+    if (finished) return;
+    finished = true;
+    spxBusy = false;
+    spxChecked = Date.now();
+    const updated = !!(reply && reply.ok && applySpx(reply.text));
+    if (updated) {
+      render();
+      toast('S&P 500 prices updated to the close of ' + fmtDay(isoToDay(SPX.last.d)) + '.', undefined, 4500);
+    } else {
+      if (lastM && mode !== 'welcome') renderBenchmark(lastM);
+      if (manual) toast(reply && reply.ok ? 'No newer S&P 500 prices yet. The latest close here is ' + fmtDay(isoToDay(SPX.last.d)) + '.'
+        : 'Couldn’t check for new S&P 500 prices. Make sure you’re online, then try again.', undefined, 5000);
+    }
+  };
+  setTimeout(() => finish(null), 20000);
+  ch.port1.onmessage = e => finish(e.data);
+  try { navigator.serviceWorker.controller.postMessage({ type: 'spx-refresh' }, [ch.port2]); } catch (e) { finish(null); }
+}
 function getAnchors() {
   const k = JSON.stringify(state.settings.spx);
   if (k !== anchorsKey) { anchors = buildAnchors(SPX, state.settings.spx); anchorsKey = k; }
@@ -238,14 +284,14 @@ function restore(snap) {
 }
 
 let toastTimer = null;
-function toast(msg, prev) {
+function toast(msg, prev, ms) {
   $('#toast-msg').textContent = msg;
   undoSnapshot = prev;
   $('#toast-undo').hidden = prev === undefined;
   const t = $('#toast');
   t.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), prev === undefined ? 3200 : 7000);
+  toastTimer = setTimeout(() => t.classList.remove('show'), ms || (prev === undefined ? 3200 : 7000));
 }
 
 /* ---------- tabs ---------- */
@@ -1069,6 +1115,8 @@ function renderBenchmark(M) {
   parts.push(h('p', { class: 'fine' },
     'S&P 500 total return (dividends reinvested), month-end data from 1985 to the close of ' + fmtDay(sp.lastDay) + ' at ' + num(sp.lastPx, 2) + (sp.user ? ', which you added' : '') + '. ',
     cur() !== 'USD' ? 'Assumes your deposits were in US dollars; currency moves aren’t included. ' : '',
+    spxCanCheck() ? h('button', { type: 'button', class: 'link', 'data-action': 'check-spx' }, spxBusy ? 'Checking…' : 'Check for new prices') : null,
+    spxCanCheck() && !(spxOpen || mode === 'example') ? ' · ' : null,
     spxOpen || mode === 'example' ? null : h('button', { type: 'button', class: 'link', 'data-action': 'edit-spx' }, 'Add a newer close')));
   body.replaceChildren(...parts);
 }
@@ -1908,6 +1956,7 @@ const actions = {
     const prev = commitData(s => { s.deposits = s.deposits.filter(x => x.id !== id); });
     toast('Deleted ' + (d ? money(d.a, {}) + ' on ' + fmtDate(d.d) : 'entry'), prev);
   },
+  'check-spx': () => checkSpx(true),
   'edit-spx': () => {
     spxOpen = true; renderBenchmark(lastM);
     const t = todayDay(), last = isoToDay(SPX.last.d);
@@ -2054,6 +2103,24 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) rend
 setInterval(() => { if (!document.hidden) renderHeader(); }, 60000);
 if (PWA && 'serviceWorker' in navigator && window.isSecureContext) {
   window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => { /* runs online-only without it */ }); });
+  /* A Home Screen app isn't reloaded when you go back to it: the phone keeps the page paused in the
+     background. So new S&P prices are fetched when you return (and at start, in case a slow
+     connection meant the saved copy was used), and taken in without reloading the page. */
+  navigator.serviceWorker.ready.then(() => setTimeout(() => checkSpx(false), 4000)).catch(() => {});
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    if (Date.now() - spxChecked > 5 * 60000) checkSpx(false);
+    if (Date.now() - swChecked > 30 * 60000) {
+      swChecked = Date.now();
+      navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => {});
+    }
+  });
+  window.addEventListener('online', () => checkSpx(false));
+  /* A new version of the app arrived while this page was open: it's used from the next launch. */
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController) toast('The app has been updated. Close it fully (swipe it away) and open it again to use the new version.', undefined, 9000);
+  });
 }
 
 /* Always opens on Overview: current value and KPIs first. */
