@@ -1,0 +1,43 @@
+# Keeps the app's S&P 500 data current. Runs on GitHub's servers, reads public index prices
+# (FRED, with Yahoo Finance for the newest day) and commits the updated spx-data.js.
+# It uses no outside actions, needs no keys, and never touches your data.
+name: Update S&P 500 data
+
+on:
+  schedule:
+    - cron: '23 2 * * 2-6'    # after FRED posts each weekday's close (about 7 PM US Central)
+    - cron: '23 18 * * 1-5'   # catch-up for days FRED posts late
+    - cron: '23 23 * * 1-5'   # same-evening close from Yahoo Finance, when it answers
+  workflow_dispatch:          # a "Run workflow" button on the Actions tab
+  push:
+    paths: ['.github/workflows/update-sp500.yml']   # runs once as soon as this file is added or changed
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-sp500
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Get the repository
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+
+      - name: Add new S&P 500 closes
+        working-directory: repo
+        run: if [ -f update_spx.py ]; then python3 update_spx.py; else python3 scripts/update_spx.py; fi
+
+      - name: Save the update
+        working-directory: repo
+        run: |
+          if git diff --quiet; then echo "No new closes."; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Update S&P 500 data"
+          git push
