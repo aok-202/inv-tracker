@@ -1,3 +1,4 @@
+/* build 2026-11-12.1 */
 /* calc.js: dates, returns (CAGR, XIRR), the S&P 500 comparison, and reading pasted or
    uploaded tables. No network, no storage; plain functions only. */
 const DAY_MS = 86400000;
@@ -267,6 +268,138 @@ function windowSeries(G, deps, A, a, b) {
   return { a, b, pts, vline, vin, cmp, rebased };
 }
 
+/* ---- performance: how your investments did, whatever you paid in and when ----
+   Between two saved values the return is the gain after deposits, divided by the money at work with
+   each deposit counted from its date (Modified Dietz). Chaining those returns gives an index that
+   starts at 1 on your first saved value: a time-weighted return, which is the like-for-like
+   comparison with a market index. sp is the S&P 500 total-return index, also 1 on that day.
+   A deposit dated on the day of a saved value is taken to be inside that value. */
+function perfSeries(G, deps, A) {
+  if (!G) return null;
+  const vals = G.vals;
+  const i0 = vals.findIndex(v => v.a > 0);
+  if (i0 < 0 || vals.length - i0 < 2) return null;
+  const t0 = vals[i0].t, tr0 = trAt(A, t0);
+  const pts = [{ t: t0, a: vals[i0].a, idx: 1, sp: tr0 ? 1 : null, r: null, net: 0 }];
+  let idx = 1, di = 0;
+  while (di < deps.length && deps[di].t <= t0) di++;
+  for (let i = i0 + 1; i < vals.length; i++) {
+    const p = vals[i - 1], q = vals[i], span = q.t - p.t;
+    let net = 0, wsum = 0;
+    while (di < deps.length && deps[di].t <= q.t) { const d = deps[di++]; net += d.a; wsum += (d.a * (q.t - d.t)) / span; }
+    const base = p.a + wsum;
+    const r = base > 0 ? Math.max(-0.999999, (q.a - p.a - net) / base) : 0;
+    idx *= 1 + r;
+    pts.push({ t: q.t, a: q.a, idx, sp: tr0 ? trAt(A, q.t) / tr0 : null, r, net });
+  }
+  return { pts, t0, t1: pts[pts.length - 1].t };
+}
+/* The saved value closest to day t and no more than tol days from it; the earlier one wins a tie. -1 if none. */
+function nearIdx(pts, t, tol) {
+  if (!pts.length) return -1;
+  let lo = 0, hi = pts.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (pts[mid].t <= t) lo = mid; else hi = mid - 1; }
+  let best = -1, bd = Infinity;
+  for (const k of [lo, lo + 1]) {
+    if (k >= pts.length) continue;
+    const d = Math.abs(pts[k].t - t);
+    if (d <= tol && d < bd) { bd = d; best = k; }
+  }
+  return best;
+}
+/* Return between two saved values, yours and the index's; a yearly rate too once the span reaches a year. */
+function perfSpan(P, i, j) {
+  const p = P.pts[i], q = P.pts[j], days = q.t - p.t;
+  const you = q.idx / p.idx - 1, sp = p.sp != null && q.sp != null ? q.sp / p.sp - 1 : null;
+  const ann = r => (r == null || days < 365 ? null : Math.pow(1 + r, 365.25 / days) - 1);
+  return { i, j, t0: p.t, t1: q.t, days, you, sp, youAnn: ann(you), spAnn: ann(sp) };
+}
+const yearEndDay = y => Math.round(Date.UTC(y, 11, 31) / DAY_MS);
+const monthEndDay = (y, m) => Math.round(Date.UTC(y, m, 0) / DAY_MS);
+/* Calendar years. A year runs between the saved values nearest each year end (within 10 days).
+   The first year may start at your first saved value (partial) and the latest runs to your latest value (ytd).
+   A year in the middle without a value near one of its ends is listed as missing. */
+function perfYears(P) {
+  const last = P.pts.length - 1, y0 = dayYear(P.t0), y1 = dayYear(P.t1), rows = [];
+  for (let y = y0; y <= y1; y++) {
+    let i = nearIdx(P.pts, yearEndDay(y - 1), 10), j = nearIdx(P.pts, yearEndDay(y), 10);
+    let partial = false, ytd = false;
+    if (i < 0 && y === y0) { i = 0; partial = true; }
+    if (j < 0 && y === y1) { j = last; ytd = true; }
+    if (i >= 0 && j > i) rows.push(Object.assign({ year: y, partial, ytd }, perfSpan(P, i, j)));
+    else if (y > y0 && y < y1) rows.push({ year: y, missing: true, you: null, sp: null });
+  }
+  return rows;
+}
+/* Calendar months, between the saved values nearest each month end (within 5 days).
+   The month in progress runs to your latest value (mtd). Months without values at both ends are left out. */
+function perfMonths(P) {
+  const last = P.pts.length - 1, rows = [];
+  let y = dayYear(P.t0), m = dayMonth(P.t0);
+  const yE = dayYear(P.t1), mE = dayMonth(P.t1);
+  for (let guard = 0; guard < 2400; guard++) {
+    const i = nearIdx(P.pts, monthEndDay(m === 1 ? y - 1 : y, m === 1 ? 12 : m - 1), 5);
+    let j = nearIdx(P.pts, monthEndDay(y, m), 5), mtd = false;
+    const final = y === yE && m === mE;
+    if (j < 0 && final) { j = last; mtd = true; }
+    if (i >= 0 && j > i) rows.push(Object.assign({ y, m, mtd }, perfSpan(P, i, j)));
+    if (final) break;
+    m++; if (m > 12) { m = 1; y++; }
+  }
+  return rows;
+}
+/* Trailing periods ending at your latest value: this year so far, 1, 3, 5 and 10 years, and everything. */
+function perfPeriods(P) {
+  const last = P.pts.length - 1, end = P.pts[last].t, rows = [];
+  const add = (k, i, n) => { if (i >= 0 && i < last) rows.push(Object.assign({ k, n: n || null }, perfSpan(P, i, last))); };
+  add('ytd', nearIdx(P.pts, yearEndDay(dayYear(end) - 1), 10));
+  const e = new Date(end * DAY_MS);
+  for (const n of [1, 3, 5, 10]) add(n + 'y', nearIdx(P.pts, Math.round(Date.UTC(e.getUTCFullYear() - n, e.getUTCMonth(), e.getUTCDate()) / DAY_MS), 16), n);
+  add('all', 0);
+  return rows;
+}
+/* Best and worst full months, how many went up, how many beat the index, the biggest drop from a
+   high to a later low (and when it was made back), and where the latest value stands against the highest. */
+function perfStats(P, months) {
+  const full = months.filter(r => !r.mtd);
+  const out = { n: full.length, best: null, worst: null, up: 0, down: 0, ahead: 0, cmp: 0, dd: null, high: null };
+  for (const r of full) {
+    if (!out.best || r.you > out.best.you) out.best = r;
+    if (!out.worst || r.you < out.worst.you) out.worst = r;
+    if (r.you > 0) out.up++; else if (r.you < 0) out.down++;
+    if (r.sp != null) { out.cmp++; if (r.you > r.sp) out.ahead++; }
+  }
+  let peak = P.pts[0], dd = null;
+  for (const p of P.pts) {
+    if (p.idx >= peak.idx) peak = p;
+    const d = p.idx / peak.idx - 1;
+    if (d < -0.0005 && (!dd || d < dd.depth)) dd = { depth: d, peakT: peak.t, troughT: p.t, peakIdx: peak.idx };
+  }
+  if (dd) { const rec = P.pts.find(p => p.t > dd.troughT && p.idx >= dd.peakIdx); dd.recT = rec ? rec.t : null; }
+  out.dd = dd;
+  let hi = P.pts[0];
+  for (const p of P.pts) if (p.idx >= hi.idx) hi = p;
+  const lastP = P.pts[P.pts.length - 1];
+  out.high = { t: hi.t, atHigh: hi === lastP, below: lastP.idx / hi.idx - 1 };
+  return out;
+}
+/* Money in, less money out, after day a and up to and including day b. */
+function flowsBetween(deps, a, b) {
+  let s = 0;
+  for (const d of deps) { if (d.t > b) break; if (d.t > a) s += d.a; }
+  return s;
+}
+/* Months until a balance that grows at `rate` a year, with `annual` paid in monthly, reaches `goal`.
+   0 if it's already there; null if it doesn't get there within 100 years. */
+function monthsToGoal(v0, annual, rate, goal) {
+  if (!(goal > 0)) return null;
+  if (v0 >= goal) return 0;
+  const rm = Math.pow(1 + rate, 1 / 12) - 1, pm = annual / 12;
+  let v = v0;
+  for (let m = 1; m <= 1200; m++) { v = v * (1 + rm) + pm; if (v >= goal) return m; }
+  return null;
+}
+
 function projectSeries(v0, annual, rate, years) {
   const rm = Math.pow(1 + rate, 1 / 12) - 1, pm = annual / 12;
   let v = v0, base = v0;
@@ -410,11 +543,11 @@ function wsSplit(line) {
 }
 const isBlank = c => c == null || (typeof c === 'string' && c.trim() === '');
 
-/* ---- broker exports in sections, like Interactive Brokers' CSV reports ----
-   Every line starts with a section name and a row kind, then the fields:
-     Allocation by Asset Class,Header,Date,Equities,Cash,NAV
-     Allocation by Asset Class,Data,202312,9500.00,250.00,9750.00
-   Only Header and Data rows are read; other kinds (MetaInfo, Total, Notes) are left alone. */
+/* ---- broker exports laid out in sections ----
+   Some brokers' CSV reports start every line with a section name and a row kind, then the fields:
+     Section name,Header,Date,...,NAV
+     Section name,Data,202312,...,9750.00
+   Only Header and Data rows are read; other kinds (totals, notes) are left alone. */
 const monthEndIso = (y, m) => dayToIso(Math.round(Date.UTC(y, m, 0) / DAY_MS));
 /* A period label made into a date: 202312 is the last day of December 2023, 2023Q4 is 31 Dec 2023,
    20231229 is that day. A month or quarter that hasn't ended yet is dated `cap` (the report's end, or today). */
@@ -460,7 +593,7 @@ function brokerTable(rows, want, today) {
   }
   const cap = periodEnd && periodEnd < today ? periodEnd : today;
   const names = want === 'values' ? NAV_NAMES : AMOUNT_NAMES;
-  const prefer = want === 'values' ? /allocation by asset class/i : /deposit|withdraw/i;
+  const prefer = want === 'values' ? /allocation|net asset value|\bnav\b/i : /deposit|withdraw/i;
   let best = null, bestScore = -1;
   for (const t of tables) {
     if (!t.data.length) continue;
@@ -737,7 +870,7 @@ function isAppWorkbook(wb) {
 /* Reads a workbook this app saved (Deposits, Values and Settings sheets). Rows edited by hand in Excel are read the same way as an import. */
 function readAppWorkbook(wb, opts) {
   opts = opts || {};
-  const out = { deposits: [], history: [], value: null, settings: { cur: 'USD', spx: null }, skipped: 0 };
+  const out = { deposits: [], history: [], value: null, settings: { cur: 'USD', spx: null, goal: null, plan: null }, skipped: 0 };
   const base = { localeFmt: opts.localeFmt, localeDecimalComma: opts.localeDecimalComma, dateCol: 0, amountCol: 1 };
   const dep = sheetByName(wb, 'deposits');
   if (dep) {
@@ -763,6 +896,18 @@ function readAppWorkbook(wb, opts) {
     const sd = resolveDate(dateParts(kv.get('s&p 500 close date')), 'dmy');
     const sp = parseAmount(kv.get('s&p 500 close level'), null);
     if (sd && isFinite(sp) && sp > 0) out.settings.spx = { d: sd, px: sp };
+    /* a goal and the plan's settings, in files saved by newer versions of the app */
+    const numOf = k => { const v = kv.get(k); return v == null || v === '' ? NaN : parseAmount(v, null); };
+    const goal = numOf('goal');
+    if (isFinite(goal) && goal > 0) out.settings.goal = round2(goal);
+    const py = numOf('plan: years ahead'), pa = numOf('plan: deposits per year'), pr = numOf('plan: return per year');
+    if (isFinite(py) || isFinite(pr) || isFinite(pa)) {
+      out.settings.plan = {
+        years: py >= 1 && py <= 40 ? Math.round(py) : 10,
+        annual: isFinite(pa) && pa >= 0 ? round2(pa) : null,
+        rate: pr >= 0 && pr <= 0.15 ? pr : 0.07
+      };
+    }
   }
   return out;
 }
@@ -808,4 +953,4 @@ function bestDepositSheet(wb, opts) {
   });
   return best;
 }
-if (typeof module !== 'undefined') module.exports = { ymdToIso, isoToDay, dayToIso, dayYear, buildAnchors, trAt, xirr, computeMetrics, growthSeries, valueAt, compareWindow, windowSeries, planValues, thinValues, projectSeries, recurringDates, dateParts, resolveDate, parseAmount, guessDecimalComma, numberCore, analyzeRows, parseTextTable, serialToIso, isAppWorkbook, readAppWorkbook, findCurrentValue, bestDepositSheet, FORMAT_MARK };
+if (typeof module !== 'undefined') module.exports = { ymdToIso, isoToDay, dayToIso, dayYear, buildAnchors, trAt, xirr, computeMetrics, growthSeries, valueAt, compareWindow, windowSeries, perfSeries, nearIdx, perfSpan, perfYears, perfMonths, perfPeriods, perfStats, flowsBetween, monthsToGoal, planValues, thinValues, projectSeries, recurringDates, dateParts, resolveDate, parseAmount, guessDecimalComma, numberCore, analyzeRows, parseTextTable, serialToIso, isAppWorkbook, readAppWorkbook, findCurrentValue, bestDepositSheet, FORMAT_MARK };
