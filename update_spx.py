@@ -10,9 +10,12 @@ S&P 500: new closes are chained onto the stored total-return index with dividend
 yearly rate stored in spx-data.js (div). Month ends are recorded once a month is complete.
 
 Everything else: month-end levels of a total-return index (100 at the first month stored), built
-from Yahoo Finance's dividend-adjusted closes, or from FRED for inflation and cash. Months already
+from Yahoo Finance's dividend-adjusted closes, or from FRED for inflation and cash. When FRED can't
+be reached, cash comes from Yahoo Finance's 13-week Treasury bill rate (^IRX) and inflation from the
+Bureau of Labor Statistics' public data service (the same index FRED republishes). Months already
 stored are never rewritten; new months are chained onto the last one stored. If a source can't be
-reached, that series is simply left as it is until the next run.
+reached, that series is simply left as it is until the next run, and the reason is written into
+bench-data.js ("problems"), so it can be read in the repository without opening the job's log.
 
 To compare against another index or fund, add a line to BENCHMARKS below.
 
@@ -32,6 +35,10 @@ BENCH = ROOT / 'bench-data.js'
 FRED = 'https://fred.stlouisfed.org/graph/fredgraph.csv?id='
 YAHOO = 'https://query1.finance.yahoo.com/v8/finance/chart/'
 HEADERS = {'User-Agent': 'Mozilla/5.0 (compatible; investment-tracker data refresh)'}
+BROWSER = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+           'Accept': 'text/csv,text/plain,*/*'}
+BLS = 'https://api.bls.gov/publicAPI/v1/timeseries/data/'
+STATE = {'fred_down': None}   # why FRED failed earlier in this run, if it did, so it isn't waited on again
 EASTERN = dt.timezone(dt.timedelta(hours=-5))
 
 # What the app can be compared against, besides the S&P 500: (id, Yahoo Finance symbol, name).
@@ -53,6 +60,11 @@ FRED_SERIES = [
     ('CASH', 'DGS3MO', 'Cash (3-month US Treasury bills)', 'yield'),
     ('CPI', 'CPIAUCNS', 'US inflation', 'level'),
 ]
+# Where to turn when FRED can't be reached: the same measure from another public source.
+FALLBACKS = {
+    'CASH': ('yahoo-yield', '^IRX'),          # 13-week Treasury bill rate, in percent
+    'CPI': ('bls', 'CUUR0000SA0'),            # CPI-U, all items, not seasonally adjusted: FRED's CPIAUCNS
+}
 TIME_BUDGET = 170   # seconds for everything in bench-data.js
 JOB_LIMIT = 240     # GitHub stops the whole job at 5 minutes (getting the files and saving them included)
 STARTED = time.time()
@@ -91,11 +103,9 @@ def fetch(url, timeout=30, headers=None):
 # Yahoo Finance answers "too many requests" (429) when asked too fast or too often from one address, so the
 # fund prices are asked for slowly, from either of its two addresses, with a wait and another try after a refusal.
 YAHOO_HOSTS = ['https://query1.finance.yahoo.com', 'https://query2.finance.yahoo.com']
-YAHOO_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
-    'Accept': 'application/json,text/plain,*/*',
-    'Accept-Language': 'en-US,en;q=0.9',
-}
+# The same plain request as the S&P 500 one, which Yahoo answers from GitHub's servers. (Dressing it up as a
+# browser is what bot filters look for, so it isn't.)
+YAHOO_HEADERS = HEADERS
 
 
 def yahoo_get(path, deadline=None):
@@ -122,12 +132,28 @@ def yahoo_get(path, deadline=None):
     raise err or ValueError('no answer')
 
 
-def parse_csv(text):
+def brief(e):
+    """An error as a short, plain line that is safe to store in a data file."""
+    text = re.sub(r"[^A-Za-z0-9 .,:;()'/_%^-]+", ' ', str(e) or type(e).__name__)   # no braces: the file's own markers
+    return re.sub(r'\s+', ' ', text).strip()[:160] or type(e).__name__
+
+
+def fred_csv(series, timeout=30):
+    """One FRED series as CSV text. After a refusal it asks once more, as a browser would."""
+    try:
+        return fetch(FRED + series, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        if e.code not in (403, 406, 429):
+            raise
+        return fetch(FRED + series, timeout=timeout, headers=BROWSER)
+
+
+def parse_csv(text, digits=2):
     out = {}
     for row in csv.reader(io.StringIO(text)):
         if len(row) >= 2 and re.fullmatch(r'\d{4}-\d{2}-\d{2}', row[0].strip()) and row[1].strip() not in ('', '.'):
             try:
-                out[row[0].strip()] = round(float(row[1]), 2)
+                out[row[0].strip()] = round(float(row[1]), digits)
             except ValueError:
                 pass
     return out
@@ -167,9 +193,10 @@ def update_spx(argv):
     else:
         closes, used = {}, []
         try:
-            closes.update(parse_csv(fetch(FRED + 'SP500')))
+            closes.update(parse_csv(fred_csv('SP500')))
             used.append('FRED')
         except Exception as e:
+            STATE['fred_down'] = brief(e)
             print('FRED unavailable:', e)
         try:
             newest = max(closes) if closes else ''
@@ -240,8 +267,8 @@ def yahoo_daily(symbol, source_dir=None, recent=False, deadline=None):
         texts = [(Path(source_dir) / (symbol + '.json')).read_text(encoding='utf-8')]
     else:
         texts = None
-        tail = '&interval=1d&events=div%2Csplits&includeAdjustedClose=true'
-        urls = [q + '?period1=0&period2=%d' % (int(time.time()) + 86400) + tail, q + '?range=max' + tail]
+        tail = '&interval=1d&includeAdjustedClose=true'
+        urls = [q + '?range=max' + tail, q + '?period1=0&period2=%d' % (int(time.time()) + 86400) + tail]
         if recent:
             urls.insert(0, q + '?range=2y' + tail)
     best, err = None, None
@@ -312,21 +339,75 @@ def fred_levels(series, kind, source_dir=None, deadline=None):
     'level': the index itself, dated at each month's last day (FRED dates a month by its first day).
     'yield': a yearly rate in percent, compounded day by day into a level."""
     text = (Path(source_dir) / (series + '.csv')).read_text(encoding='utf-8') if source_dir else \
-        fetch(FRED + series, timeout=max(1, min(30, deadline - time.time())) if deadline else 30)
-    obs = sorted((dt.date.fromisoformat(d), v) for d, v in parse_csv(text).items())
+        fred_csv(series, timeout=max(1, min(30, deadline - time.time())) if deadline else 30)
+    obs = sorted((dt.date.fromisoformat(d), v) for d, v in parse_csv(text, digits=6).items())
     obs = [(d, v) for d, v in obs if d >= dt.date(1984, 12, 1)]
     if len(obs) < 2:
         raise ValueError('too few observations')
     if kind == 'level':
-        rows = [(month_last_day((d.year, d.month)), float(v)) for d, v in obs]
-        # every month listed is complete, so add a marker in the following month to close the last one
-        rows.append((rows[-1][0] + dt.timedelta(days=1), rows[-1][1]))
-        return rows
+        return monthly_rows([((d.year, d.month), float(v)) for d, v in obs])
+    return compound(obs)
+
+
+def monthly_rows(items):
+    """[((y, m), level)] for whole months -> rows dated at each month's last day, plus a marker in the following
+    month: every month listed is complete."""
+    rows = [(month_last_day(ym), float(v)) for ym, v in sorted(items)]
+    rows.append((rows[-1][0] + dt.timedelta(days=1), rows[-1][1]))
+    return rows
+
+
+def compound(obs):
+    """[(date, yearly rate in percent)] -> [(date, level)]: each rate earned until the next date."""
     rows, level = [(obs[0][0], 100.0)], 100.0
     for (d0, y0), (d1, _) in zip(obs, obs[1:]):
         level *= (1 + y0 / 100.0) ** ((d1 - d0).days / 365.0)
         rows.append((d1, level))
     return rows
+
+
+def yahoo_yield_levels(symbol, source_dir=None, recent=False, deadline=None):
+    """A rate quoted in percent on Yahoo Finance (^IRX: 13-week Treasury bills), compounded day by day."""
+    rows, _ = yahoo_daily(symbol, source_dir, recent=recent, deadline=deadline)
+    obs = [(d, v) for d, v in rows if d >= dt.date(1984, 12, 1) and 0 < v < 30]
+    if len(obs) < 2:
+        raise ValueError('too few observations')
+    return compound(obs)
+
+
+def bls_levels(series, source_dir=None, recent=False, deadline=None):
+    """US inflation from the Bureau of Labor Statistics' public data service, month by month.
+    Without a key it answers ten years per request."""
+    if source_dir:
+        docs = [json.loads((Path(source_dir) / (series + '.json')).read_text(encoding='utf-8'))]
+    else:
+        docs, this_year = [], dt.date.today().year
+        y0 = this_year - 2 if recent else 1985
+        while y0 <= this_year:
+            y1 = min(y0 + 9, this_year)
+            left = deadline - time.time() if deadline else 30
+            if left < 1:
+                raise OutOfTime('out of time')
+            body = json.dumps({'seriesid': [series], 'startyear': str(y0), 'endyear': str(y1)}).encode('utf-8')
+            req = urllib.request.Request(BLS, data=body, headers=dict(HEADERS, **{'Content-Type': 'application/json'}))
+            with urllib.request.urlopen(req, timeout=min(30, left)) as r:
+                docs.append(json.loads(r.read().decode('utf-8')))
+            y0 = y1 + 1
+    months = {}
+    for doc in docs:
+        if doc.get('status') != 'REQUEST_SUCCEEDED':
+            raise ValueError('BLS said: ' + ' '.join(str(m) for m in (doc.get('message') or [doc.get('status')])))
+        for item in doc['Results']['series'][0]['data']:
+            period = str(item.get('period', ''))
+            if not re.fullmatch(r'M(0[1-9]|1[0-2])', period):
+                continue   # M13 is the year's average
+            try:
+                months[(int(item['year']), int(period[1:]))] = float(item['value'])
+            except (KeyError, TypeError, ValueError):
+                continue   # '-': a month with no figure (October 2025 was never published)
+    if len(months) < 2:
+        raise ValueError('too few months')
+    return monthly_rows(months.items())
 
 
 def merge_series(old, months, latest, digits=4):
@@ -375,7 +456,7 @@ def update_bench(argv):
         print('bench-data.js could not be read; left as it is.')
         return
     stored = {s.get('id'): s for s in bench.get('series', []) if isinstance(s, dict)}
-    began, got, notes, refused = time.time(), {}, [], False
+    began, got, notes, refused, problems = time.time(), {}, [], False, {}
     deadline = min(began + TIME_BUDGET, STARTED + JOB_LIMIT)
 
     def keep(sid):
@@ -387,10 +468,12 @@ def update_bench(argv):
     for n, (sid, name, where, code, kind) in enumerate(jobs):
         if time.time() > deadline - 1:
             notes.append('%s: out of time, left for the next run' % sid)
+            problems[sid] = 'out of time'
             keep(sid)
             continue
         if where == 'yahoo' and refused:
             notes.append('%s: left for the next run (Yahoo Finance is turning requests from here away for now)' % sid)
+            problems[sid] = 'not asked: Yahoo Finance turned an earlier request away'
             keep(sid)
             continue
         try:
@@ -398,12 +481,35 @@ def update_bench(argv):
                 rows, adjusted = within(deadline, yahoo_daily, code, source_dir, recent=sid in stored, deadline=deadline)
                 src = 'Yahoo Finance'
             else:
-                rows, adjusted = within(deadline, fred_levels, code, kind, source_dir, deadline), True
-                src = 'FRED'
+                rows, adjusted, tried = None, True, []
+                if STATE['fred_down'] and not source_dir:
+                    tried.append('FRED: ' + STATE['fred_down'])
+                else:
+                    try:
+                        rows, src = within(deadline, fred_levels, code, kind, source_dir, deadline), 'FRED'
+                    except OutOfTime:
+                        raise
+                    except Exception as e:
+                        tried.append('FRED: ' + brief(e))
+                if rows is None and sid in FALLBACKS:
+                    how, other = FALLBACKS[sid]
+                    try:
+                        if how == 'yahoo-yield':
+                            rows, src = within(deadline, yahoo_yield_levels, other, source_dir, sid in stored, deadline), 'Yahoo Finance (' + other + ')'
+                        else:
+                            rows, src = within(deadline, bls_levels, other, source_dir, sid in stored, deadline), 'BLS'
+                        code = other
+                    except OutOfTime:
+                        raise
+                    except Exception as e:
+                        tried.append(other + ': ' + brief(e))
+                if rows is None:
+                    raise ValueError('; '.join(tried))
             months, latest = months_from_daily(rows)
             merged = merge_series(stored.get(sid), months, latest)
             if merged is None:
                 notes.append('%s: the new data did not join onto what is stored; left as it is' % sid)
+                problems[sid] = 'new data did not join onto what is stored'
                 keep(sid)
                 continue
             tr, start, last = merged
@@ -418,6 +524,7 @@ def update_bench(argv):
                 notes.append('%s: %d month ends from %s, latest %s' % (sid, len(tr), start, last['d']))
         except Exception as e:
             notes.append('%s: could not be updated (%s)' % (sid, e))
+            problems[sid] = brief(e)
             keep(sid)
             if where == 'yahoo' and isinstance(e, urllib.error.HTTPError) and e.code in (403, 429):
                 refused = True
@@ -429,6 +536,8 @@ def update_bench(argv):
 
     dates = [s['last']['d'] for s in out if s.get('last')]
     new = {'v': 1, 'updated': max(dates) if dates else None, 'series': out}
+    if problems:   # what went wrong this run, so it can be seen in the repository without the job's log
+        new['problems'] = problems
     for line in notes:
         print(' ', line)
     if new == bench:
