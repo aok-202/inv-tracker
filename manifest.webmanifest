@@ -1,12 +1,12 @@
 {
   "name": "Investment Tracker",
   "short_name": "Investments",
-  "description": "Deposits, returns and an S&P 500 comparison, read from your own Excel file. Works offline and sends nothing anywhere.",
+  "description": "Deposits, returns and comparisons with the S&P 500 and other indexes, read from your own Excel file. Works offline and sends nothing anywhere.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#F2F4F7",
-  "theme_color": "#F2F4F7",
+  "background_color": "#0C1830",
+  "theme_color": "#0C1830",
   "icons": [
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },

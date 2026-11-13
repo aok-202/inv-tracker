@@ -1,4 +1,4 @@
-/* build 2026-11-12.1 */
+/* build 2026-11-13.1 */
 /* calc.js: dates, returns (CAGR, XIRR), the S&P 500 comparison, and reading pasted or
    uploaded tables. No network, no storage; plain functions only. */
 const DAY_MS = 86400000;
@@ -36,6 +36,40 @@ function buildAnchors(spx, user) {
     A.push({ t: isoToDay(user.d), tr: spx.last.tr * (user.px / spx.last.px) * Math.pow(1 + spx.div, dt / 365), px: user.px, d: user.d, user: true });
   }
   return A;
+}
+/* The same for any other stored series: month ends from its first month ("YYYY-MM"), then its latest point. */
+function seriesAnchors(s) {
+  const y0 = +String(s.start).slice(0, 4), m0 = +String(s.start).slice(5, 7);
+  const A = s.tr.map((tr, i) => {
+    const k = y0 * 12 + (m0 - 1) + i;
+    return { t: Math.round(Date.UTC(Math.floor(k / 12), (k % 12) + 1, 0) / DAY_MS), tr };
+  });
+  const lastT = s.last ? isoToDay(s.last.d) : NaN;
+  if (isFinite(lastT) && s.last.tr > 0 && A.length && lastT > A[A.length - 1].t) A.push({ t: lastT, tr: s.last.tr, d: s.last.d });
+  return A;
+}
+/* A mix of series held in fixed shares and put back to those shares at each month end
+   (parts: [{ A, w }], shares adding to 1). It starts where the youngest part starts. */
+function blendAnchors(parts) {
+  if (!parts.length || parts.some(p => !p.A || p.A.length < 2)) return null;
+  const t0 = Math.max(...parts.map(p => p.A[0].t)), t1 = Math.min(...parts.map(p => p.A[p.A.length - 1].t));
+  if (!(t1 > t0)) return null;
+  const days = [t0];
+  let y = dayYear(t0), m = dayMonth(t0);
+  for (;;) {
+    m++; if (m > 12) { m = 1; y++; }
+    const me = Math.round(Date.UTC(y, m, 0) / DAY_MS);
+    if (me >= t1) break;
+    days.push(me);
+  }
+  days.push(t1);
+  const out = [{ t: t0, tr: 100 }];
+  for (let i = 1; i < days.length; i++) {
+    let f = 0;
+    for (const p of parts) f += p.w * (trAt(p.A, days[i]) / trAt(p.A, days[i - 1]));
+    out.push({ t: days[i], tr: out[i - 1].tr * f });
+  }
+  return out;
 }
 function trAt(A, t) {
   if (!(t >= A[0].t)) return null;
@@ -109,25 +143,7 @@ function computeMetrics(st, A, today) {
     }
   }
 
-  const lastA = A[A.length - 1];
-  M.sp = { lastDay: lastA.t, lastPx: lastA.px, lastD: lastA.d, user: !!lastA.user, value: null, xirr: null, diff: null };
-  if (counted.length && counted[0].t >= A[0].t) {
-    let units = 0;
-    for (const d of counted) units += d.a / trAt(A, d.t);
-    const endT = vDay;
-    M.sp.endT = endT;
-    M.sp.value = units * trAt(A, endT);
-    M.sp.stale = endT > lastA.t + 3;
-    M.sp.periodReturn = trAt(A, endT) / trAt(A, counted[0].t) - 1;
-    if ((endT - counted[0].t) / 365.25 >= 1 / 12) {
-      const flows = counted.map(d => ({ t: d.t, a: -d.a }));
-      flows.push({ t: endT, a: M.sp.value });
-      M.sp.xirr = xirr(flows);
-    }
-    if (hasValue) M.sp.diff = V - M.sp.value;
-  } else if (counted.length) {
-    M.sp.unavailable = 'early';
-  }
+  M.sp = sameDeposits(M, A);
 
   const cy = dayYear(today);
   const years = new Map();
@@ -155,6 +171,31 @@ function computeMetrics(st, A, today) {
   M.thisYear = years.get(cy) || { sum: 0, n: 0 };
   M.lastYear = years.get(cy - 1) || { sum: 0, n: 0 };
   return M;
+}
+
+/* The same deposits, on the same days, put into an index instead (A: its anchors): what they would be
+   worth on the day of your value, the yearly return that is (XIRR), and how far ahead or behind you are. */
+function sameDeposits(M, A) {
+  const counted = M.counted, lastA = A[A.length - 1];
+  const out = { lastDay: lastA.t, lastPx: lastA.px, lastD: lastA.d, user: !!lastA.user, value: null, xirr: null, diff: null };
+  if (counted.length && counted[0].t >= A[0].t) {
+    let units = 0;
+    for (const d of counted) units += d.a / trAt(A, d.t);
+    const endT = M.vDay;
+    out.endT = endT;
+    out.value = units * trAt(A, endT);
+    out.stale = endT > lastA.t + 3;
+    out.periodReturn = trAt(A, endT) / trAt(A, counted[0].t) - 1;
+    if ((endT - counted[0].t) / 365.25 >= 1 / 12) {
+      const flows = counted.map(d => ({ t: d.t, a: -d.a }));
+      flows.push({ t: endT, a: out.value });
+      out.xirr = xirr(flows);
+    }
+    if (M.hasValue) out.diff = M.V - out.value;
+  } else if (counted.length) {
+    out.unavailable = 'early';
+  }
+  return out;
 }
 
 /* Samples for the growth chart: every deposit, every saved value, every month end. */
@@ -279,8 +320,11 @@ function perfSeries(G, deps, A) {
   const vals = G.vals;
   const i0 = vals.findIndex(v => v.a > 0);
   if (i0 < 0 || vals.length - i0 < 2) return null;
-  const t0 = vals[i0].t, tr0 = trAt(A, t0);
-  const pts = [{ t: t0, a: vals[i0].a, idx: 1, sp: tr0 ? 1 : null, r: null, net: 0 }];
+  const t0 = vals[i0].t;
+  /* the index is 1 on your first saved value, or on the first one it has data for */
+  let base = null;
+  const spAt = t => { const v = trAt(A, t); if (v == null) return null; if (base == null) base = v; return v / base; };
+  const pts = [{ t: t0, a: vals[i0].a, idx: 1, sp: spAt(t0), r: null, net: 0 }];
   let idx = 1, di = 0;
   while (di < deps.length && deps[di].t <= t0) di++;
   for (let i = i0 + 1; i < vals.length; i++) {
@@ -290,7 +334,7 @@ function perfSeries(G, deps, A) {
     const base = p.a + wsum;
     const r = base > 0 ? Math.max(-0.999999, (q.a - p.a - net) / base) : 0;
     idx *= 1 + r;
-    pts.push({ t: q.t, a: q.a, idx, sp: tr0 ? trAt(A, q.t) / tr0 : null, r, net });
+    pts.push({ t: q.t, a: q.a, idx, sp: spAt(q.t), r, net });
   }
   return { pts, t0, t1: pts[pts.length - 1].t };
 }
@@ -381,6 +425,81 @@ function perfStats(P, months) {
   for (const p of P.pts) if (p.idx >= hi.idx) hi = p;
   const lastP = P.pts[P.pts.length - 1];
   out.high = { t: hi.t, atHigh: hi === lastP, below: lastP.idx / hi.idx - 1 };
+  return out;
+}
+/* The deepest fall from a high to a later low along a list of points (level: how to read each point). */
+function deepestDrop(pts, level) {
+  let peak = null, dd = null;
+  for (const p of pts) {
+    const v = level(p);
+    if (v == null) continue;
+    if (!peak || v >= level(peak)) peak = p;
+    const d = v / level(peak) - 1;
+    if (d < -0.0005 && (!dd || d < dd.depth)) dd = { depth: d, peakT: peak.t, troughT: p.t };
+  }
+  return dd;
+}
+/* Risk, from the full months you and the index both have (months: rows from perfMonths; cash: the same
+   months' cash returns keyed y*12+m, if known). Swings are the spread of monthly returns, scaled to a year.
+   ratio: return above cash for each point of swing. beta: how much you move when the index moves 1.
+   up/down: your average month as a share of the index's, in its up months and in its down months. */
+function riskStats(months, cash) {
+  const rows = months.filter(r => !r.mtd && r.sp != null);
+  const n = rows.length;
+  if (n < 6) return null;
+  const you = rows.map(r => r.you), bm = rows.map(r => r.sp);
+  const mean = a => a.reduce((s, x) => s + x, 0) / a.length;
+  const sd = a => { const m = mean(a); return Math.sqrt(a.reduce((s, x) => s + (x - m) * (x - m), 0) / (a.length - 1)); };
+  const grow = a => Math.pow(a.reduce((s, x) => s * (1 + x), 1), 12 / a.length) - 1;
+  const my = mean(you), mb = mean(bm);
+  let cov = 0;
+  for (let i = 0; i < n; i++) cov += (you[i] - my) * (bm[i] - mb);
+  cov /= n - 1;
+  const sdY = sd(you), sdB = sd(bm);
+  const out = { n, volYou: sdY * Math.sqrt(12), volBm: sdB * Math.sqrt(12), annYou: grow(you), annBm: grow(bm),
+    beta: sdB > 0 ? cov / (sdB * sdB) : null, corr: sdY > 0 && sdB > 0 ? cov / (sdY * sdB) : null,
+    te: sd(you.map((x, i) => x - bm[i])) * Math.sqrt(12), ahead: rows.filter(r => r.you > r.sp).length };
+  let rf = 0;
+  if (cash) {
+    const c = rows.map(r => cash.get(r.y * 12 + r.m));
+    if (c.every(x => x != null)) { rf = grow(c); out.annCash = rf; }
+  }
+  out.ratioYou = out.volYou > 0 ? (out.annYou - rf) / out.volYou : null;
+  out.ratioBm = out.volBm > 0 ? (out.annBm - rf) / out.volBm : null;
+  const ups = rows.filter(r => r.sp > 0), downs = rows.filter(r => r.sp < 0);
+  out.up = ups.length >= 3 ? mean(ups.map(r => r.you)) / mean(ups.map(r => r.sp)) : null;
+  out.down = downs.length >= 3 ? mean(downs.map(r => r.you)) / mean(downs.map(r => r.sp)) : null;
+  out.nUp = ups.length; out.nDown = downs.length;
+  return out;
+}
+/* The health check: plain yes/no questions about how the portfolio is doing, each with the two numbers
+   behind it. Anything that can't be answered from the data is left out. x.all, x.year: your return
+   against the main index over everything and over the last 12 months (perfSpan rows); x.cash, x.prices: the
+   all-time row against cash and against consumer prices; x.rank: your place among the funds. A tie is a yes. */
+function healthChecks(x) {
+  const out = [], EPS = 0.0005;
+  const add = (id, you, bm, extra) => { if (you != null && bm != null && isFinite(you) && isFinite(bm)) out.push(Object.assign({ id, pass: you >= bm - EPS, you, bm }, extra || {})); };
+  if (x.all) {
+    const yearly = x.all.youAnn != null && x.all.spAnn != null;
+    add('market', yearly ? x.all.youAnn : x.all.you, yearly ? x.all.spAnn : x.all.sp, { yearly, t0: x.all.t0 });
+  }
+  if (x.year && x.all && x.all.days > 400) add('recent', x.year.you, x.year.sp);
+  if (x.rank && x.rank.of >= 4) out.push({ id: 'field', pass: x.rank.pos <= Math.ceil(x.rank.of / 2), you: x.rank.pos, bm: x.rank.of });
+  for (const id of ['cash', 'prices']) {
+    const r = x[id];
+    if (!r) continue;
+    const yearly = r.youAnn != null && r.spAnn != null;
+    add(id, yearly ? r.youAnn : r.you, yearly ? r.spAnn : r.sp, { yearly });
+  }
+  if (x.risk && x.risk.n >= 12 && x.risk.ratioYou != null && x.risk.ratioBm != null) add('risk', x.risk.ratioYou, x.risk.ratioBm, { n: x.risk.n });
+  if (x.ddYou !== undefined && x.ddBm !== undefined && x.pts >= 6) {
+    const a = x.ddYou ? x.ddYou.depth : 0, b = x.ddBm ? x.ddBm.depth : 0;
+    out.push({ id: 'drop', pass: a >= b - 0.02, you: a, bm: b });
+  }
+  if (x.years && x.years.length >= 3) {
+    const full = x.years.filter(r => !r.missing && r.sp != null);
+    if (full.length >= 3) { const won = full.filter(r => r.you >= r.sp - EPS).length; out.push({ id: 'steady', pass: won * 2 >= full.length, you: won, bm: full.length }); }
+  }
   return out;
 }
 /* Money in, less money out, after day a and up to and including day b. */
@@ -870,7 +989,7 @@ function isAppWorkbook(wb) {
 /* Reads a workbook this app saved (Deposits, Values and Settings sheets). Rows edited by hand in Excel are read the same way as an import. */
 function readAppWorkbook(wb, opts) {
   opts = opts || {};
-  const out = { deposits: [], history: [], value: null, settings: { cur: 'USD', spx: null, goal: null, plan: null }, skipped: 0 };
+  const out = { deposits: [], history: [], value: null, settings: { cur: 'USD', spx: null, goal: null, plan: null, cmp: null, main: null }, skipped: 0 };
   const base = { localeFmt: opts.localeFmt, localeDecimalComma: opts.localeDecimalComma, dateCol: 0, amountCol: 1 };
   const dep = sheetByName(wb, 'deposits');
   if (dep) {
@@ -908,6 +1027,11 @@ function readAppWorkbook(wb, opts) {
         rate: pr >= 0 && pr <= 0.15 ? pr : 0.07
       };
     }
+    /* which indexes and funds to compare with: up to three ids, "-" for an empty place, and the main one */
+    const idOf = v => { const t = String(v == null ? '' : v).trim().toUpperCase(); return /^[A-Z0-9._^-]{1,12}$/.test(t) && t !== '-' ? t : null; };
+    const cw = kv.get('compare with');
+    if (cw != null && String(cw).trim() !== '') out.settings.cmp = String(cw).split(',').slice(0, 3).map(idOf);
+    out.settings.main = idOf(kv.get('main comparison'));
   }
   return out;
 }
@@ -953,4 +1077,4 @@ function bestDepositSheet(wb, opts) {
   });
   return best;
 }
-if (typeof module !== 'undefined') module.exports = { ymdToIso, isoToDay, dayToIso, dayYear, buildAnchors, trAt, xirr, computeMetrics, growthSeries, valueAt, compareWindow, windowSeries, perfSeries, nearIdx, perfSpan, perfYears, perfMonths, perfPeriods, perfStats, flowsBetween, monthsToGoal, planValues, thinValues, projectSeries, recurringDates, dateParts, resolveDate, parseAmount, guessDecimalComma, numberCore, analyzeRows, parseTextTable, serialToIso, isAppWorkbook, readAppWorkbook, findCurrentValue, bestDepositSheet, FORMAT_MARK };
+if (typeof module !== 'undefined') module.exports = { ymdToIso, isoToDay, dayToIso, dayYear, buildAnchors, trAt, xirr, computeMetrics, sameDeposits, seriesAnchors, blendAnchors, riskStats, deepestDrop, healthChecks, growthSeries, valueAt, compareWindow, windowSeries, perfSeries, nearIdx, perfSpan, perfYears, perfMonths, perfPeriods, perfStats, flowsBetween, monthsToGoal, planValues, thinValues, projectSeries, recurringDates, dateParts, resolveDate, parseAmount, guessDecimalComma, numberCore, analyzeRows, parseTextTable, serialToIso, isAppWorkbook, readAppWorkbook, findCurrentValue, bestDepositSheet, FORMAT_MARK };

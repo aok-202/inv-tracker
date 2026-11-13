@@ -1,11 +1,11 @@
 /* Offline support. Keeps a copy of this app's own files so it opens without a connection.
    It only ever fetches files from this same site, and it never sees your Excel file or numbers.
-   spx-data.js is fetched fresh from this site when online (the daily GitHub job updates it),
-   with the saved copy used offline. When you change any other app file, change VERSION. */
-const VERSION = '2026-11-12.1';
+   spx-data.js and bench-data.js are fetched fresh from this site when online (the daily job
+   updates them), with the saved copies used offline. When you change any other app file, change VERSION. */
+const VERSION = '2026-11-13.1';
 const CACHE = 'investment-tracker-' + VERSION;
 /* The app can't run without these. */
-const FILES = ['./', 'index.html', 'styles.css', 'spx-data.js', 'calc.js', 'xlsx.js', 'app.js'];
+const FILES = ['./', 'index.html', 'styles.css', 'spx-data.js', 'bench-data.js', 'calc.js', 'xlsx.js', 'app.js'];
 /* Nice to have: a missing icon must never stop the app from working offline or updating. */
 const EXTRAS = ['manifest.webmanifest', 'apple-touch-icon.png', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png'];
 
@@ -38,7 +38,7 @@ self.addEventListener('activate', event => {
       .then(() => self.clients.claim())
   );
 });
-const FRESH = ['spx-data.js'];
+const FRESH = ['spx-data.js', 'bench-data.js'];
 /* The S&P prices: fresh from this site when it answers within a second and a half, the saved copy otherwise.
    A slow answer still finishes in the background and is saved, so the next look has it. */
 function saveFresh(req) {
@@ -52,14 +52,18 @@ async function freshFirst(req, net) {
   if (quick && quick.ok) return quick;
   return (await caches.match(req, { ignoreSearch: true })) || net.catch(() => Response.error());
 }
-/* The page can't download anything itself (its security rules forbid it), so it asks here for
-   the latest S&P prices: the same file from this same site, which also refreshes the saved copy. */
+/* The page can't download anything itself (its security rules forbid it), so it asks here for the
+   latest prices: the two data files from this same site, which also refreshes the saved copies. */
 self.addEventListener('message', event => {
   const msg = event.data || {}, port = event.ports && event.ports[0];
-  if (msg.type !== 'spx-refresh' || !port) return;
-  const url = new URL('spx-data.js', self.registration.scope).href;
-  event.waitUntil(saveFresh(new Request(url))
-    .then(async res => { if (!res.ok) throw new Error('HTTP ' + res.status); port.postMessage({ ok: true, text: await res.text() }); })
+  if ((msg.type !== 'data-refresh' && msg.type !== 'spx-refresh') || !port) return;
+  const get = async name => {
+    const res = await saveFresh(new Request(new URL(name, self.registration.scope).href));
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.text();
+  };
+  event.waitUntil(get('spx-data.js')
+    .then(async text => port.postMessage({ ok: true, text, bench: msg.type === 'data-refresh' ? await get('bench-data.js').catch(() => null) : null }))
     .catch(err => port.postMessage({ ok: false, error: String((err && err.message) || err) })));
 });
 self.addEventListener('fetch', event => {

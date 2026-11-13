@@ -5,26 +5,28 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; manifest-src 'self'; worker-src 'self'; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'">
 <meta name="referrer" content="no-referrer">
-<meta name="description" content="Deposits, returns and an S&amp;P 500 comparison, read from your own Excel file.">
-<meta name="app-version" content="build 2026-11-12.1">
+<meta name="description" content="Deposits, returns and comparisons with the S&amp;P 500 and other indexes, read from your own Excel file.">
+<meta name="app-version" content="build 2026-11-13.1">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Investments">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="theme-color" content="#F2F4F7" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0B111B" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0C1830">
 <title>Investment Tracker</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body data-mode="welcome">
-<div class="app">
-  <header class="topbar">
-    <div class="brand">
-      <h1>Investments</h1>
-      <p class="file-status" id="file-status" role="status">No file open</p>
+<header class="topbar ink" id="topbar">
+  <div class="topbar-in">
+    <div class="bar-id">
+      <div class="brand">
+        <h1>Investments</h1>
+        <p class="file-status" id="file-status" role="status">No file open</p>
+      </div>
+      <div class="bar-mini" id="bar-mini" aria-hidden="true"><span class="bar-mini-title" id="bar-mini-title"></span><span class="bar-mini-sub" id="bar-mini-sub"></span></div>
     </div>
     <div class="top-actions">
       <button class="icon-btn" type="button" data-action="toggle-hide" id="btn-hide" aria-pressed="false" aria-label="Hide amounts" title="Hide amounts">
@@ -38,37 +40,43 @@
         <svg viewBox="0 0 24 24" width="23" height="23" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
       </button>
     </div>
-  </header>
+  </div>
+</header>
 
-  <nav class="tabbar" role="tablist" aria-label="Sections">
-    <button type="button" role="tab" id="tabbtn-overview" aria-controls="view-overview" aria-selected="true" data-tab="overview">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16"/><path d="M5 15.5l4.5-4.5 3.5 3L19 8"/><path d="M15 8h4v4"/></svg>
-      <span>Overview</span>
-    </button>
-    <button type="button" role="tab" id="tabbtn-deposits" aria-controls="view-deposits" aria-selected="false" data-tab="deposits" tabindex="-1">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h11M4 12h11M4 17h7"/><path d="M18 14v7M14.5 17.5h7"/></svg>
-      <span>Deposits</span>
-    </button>
-    <button type="button" role="tab" id="tabbtn-performance" aria-controls="view-performance" aria-selected="false" data-tab="performance" tabindex="-1">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 20v-7M12 20V5M18 20v-10"/></svg>
-      <span>Performance</span>
-    </button>
-    <button type="button" role="tab" id="tabbtn-plan" aria-controls="view-plan" aria-selected="false" data-tab="plan" tabindex="-1">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.4"/><circle cx="12" cy="12" r="0.9" fill="currentColor"/></svg>
-      <span>Plan</span>
-    </button>
-  </nav>
+<nav class="tabbar ink" id="tabbar" role="tablist" aria-label="Sections">
+  <span class="tab-ind" id="tab-ind" aria-hidden="true"></span>
+  <button type="button" role="tab" id="tabbtn-overview" aria-controls="view-overview" aria-selected="true" data-tab="overview">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16"/><path d="M5 15.5l4.5-4.5 3.5 3L19 8"/><path d="M15 8h4v4"/></svg>
+    <span>Overview</span>
+  </button>
+  <button type="button" role="tab" id="tabbtn-deposits" aria-controls="view-deposits" aria-selected="false" data-tab="deposits" tabindex="-1">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h11M4 12h11M4 17h7"/><path d="M18 14v7M14.5 17.5h7"/></svg>
+    <span>Deposits</span>
+  </button>
+  <button type="button" role="tab" id="tabbtn-performance" aria-controls="view-performance" aria-selected="false" data-tab="performance" tabindex="-1">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 20v-7M12 20V5M18 20v-10"/></svg>
+    <span>Performance</span>
+  </button>
+  <button type="button" role="tab" id="tabbtn-plan" aria-controls="view-plan" aria-selected="false" data-tab="plan" tabindex="-1">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.4"/><circle cx="12" cy="12" r="0.9" fill="currentColor"/></svg>
+    <span>Plan</span>
+  </button>
+</nav>
 
-  <div id="banner" class="banner" role="status" hidden></div>
+<div class="app">
+  <div id="banner" class="banner ink" role="status" hidden></div>
 
   <main>
     <!-- ================= Overview ================= -->
     <section id="view-overview" class="view" role="tabpanel" aria-labelledby="tabbtn-overview">
       <div id="welcome" class="welcome">
+        <div class="welcome-stage stage ink" data-trend="up">
+        <div class="stage-glow" aria-hidden="true"></div>
         <svg class="welcome-art" viewBox="0 0 320 112" preserveAspectRatio="none" aria-hidden="true">
           <path class="wa-dep" d="M0 98H40V90H80V82H120V72H160V64H200V54H240V46H280V36H320V112H0Z"/>
           <path class="wa-gain" d="M0 98L40 88 80 82 120 63 160 66 200 45 240 35 280 23 320 8V36H280V46H240V54H200V64H160V72H120V82H80V90H40V98Z"/>
-          <path class="wa-line" d="M0 98L40 88 80 82 120 63 160 66 200 45 240 35 280 23 320 8"/>
+          <path class="wa-ref" pathLength="1" d="M0 100L40 93 80 90 120 76 160 80 200 64 240 58 280 49 320 38"/>
+          <path class="wa-line" pathLength="1" d="M0 98L40 88 80 82 120 63 160 66 200 45 240 35 280 23 320 8"/>
         </svg>
         <h2>Open your investment file</h2>
         <p class="lead">Pick your Excel file from the Files app. The app reads your deposits and value right here on this device and works out your returns.</p>
@@ -83,6 +91,8 @@
           </div>
         </div>
         <p class="note">No file yet? <button type="button" class="link" data-action="template">Get a blank Excel template</button>, fill in your deposits, then open it here.</p>
+        </div>
+        <div class="welcome-more">
         <div class="wel-keep" id="wel-keep-wrap">
           <label class="switch" for="wel-keep"><span class="switch-label">Open straight to my numbers next time</span><input type="checkbox" id="wel-keep" role="switch"><span class="track" aria-hidden="true"></span></label>
           <p class="note">Keeps a copy of your numbers on this device only, so you don’t have to pick the file each time. Off by default.</p>
@@ -101,16 +111,18 @@
             <span><strong>Works offline</strong> once it’s on your Home Screen.</span>
           </li>
         </ul>
+        </div>
       </div>
 
       <div id="dashboard" hidden>
-        <section id="hero" class="hero" aria-labelledby="hero-label">
+        <section id="hero" class="stage ink" aria-labelledby="hero-label" data-trend="flat">
+          <div class="stage-glow" aria-hidden="true"></div>
           <div class="hero-head">
             <div class="hero-row">
               <p class="hero-label" id="hero-label">Portfolio value</p>
               <button class="btn btn-primary btn-pill" type="button" data-action="open-value" id="val-open">Update value</button>
             </div>
-            <p class="hero-value fig" id="hero-value">—</p>
+            <p class="hero-value fig"><span class="od" id="hero-fig" aria-hidden="true"></span><span class="sr-only" id="hero-value">—</span></p>
             <p class="hero-change" id="hero-chips"></p>
             <p class="hero-meta" id="hero-asof"></p>
           </div>
@@ -144,7 +156,13 @@
               <div class="plot" id="growth-plot"></div>
               <div class="touch" id="growth-touch" aria-hidden="true"></div>
             </div>
-            <div class="range-presets" id="growth-presets" role="group" aria-label="Time window"></div>
+            <div class="stage-controls">
+              <div class="range-presets" id="growth-presets" role="group" aria-label="Time window"></div>
+              <button class="chip-btn" type="button" data-action="open-picker" id="growth-pick" aria-label="Choose what to compare with">
+                <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 6h9M15 6h2M3 14h2M8 14h9"/><circle cx="13.5" cy="6" r="1.8"/><circle cx="6.5" cy="14" r="1.8"/></svg>
+                <span>Compare</span>
+              </button>
+            </div>
             <div class="nav" id="growth-nav" role="group" aria-label="Chart window" hidden>
               <div class="nav-track" id="nav-track">
                 <svg class="nav-spark" id="growth-spark" viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true"></svg>
@@ -157,15 +175,23 @@
               </div>
             </div>
             <p class="win-caption" id="growth-window"></p>
-            <div class="cmp" id="growth-compare" aria-live="polite" hidden></div>
-            <details class="table-view" id="growth-tv">
-              <summary>Show as a table</summary>
-              <div class="table-scroll" id="growth-table"></div>
-            </details>
           </div>
         </section>
 
+        <div class="after-stage" id="growth-more">
+          <div class="cmp card" id="growth-compare" aria-live="polite" hidden></div>
+          <details class="table-view" id="growth-tv">
+            <summary>Show the chart as a table</summary>
+            <div class="table-scroll" id="growth-table"></div>
+          </details>
+        </div>
+
         <div class="cols" id="overview-more">
+          <section class="group span-2" id="verdict-sec" aria-labelledby="verdict-title" hidden>
+            <h2 class="sec-title" id="verdict-title">How it’s doing</h2>
+            <div class="card verdict" id="verdict"></div>
+          </section>
+
           <section class="group" aria-labelledby="kpis-title">
             <h2 class="sec-title" id="kpis-title">Key figures</h2>
             <div id="kpis" class="card kpis"></div>
@@ -233,17 +259,46 @@
         <h2 class="view-title">Performance</h2>
         <p class="view-sub" id="perf-sub"></p>
       </header>
+      <div class="cmp-bar" id="cmp-bar" hidden></div>
       <div id="perf-empty" class="card empty-card" hidden></div>
+
+      <div class="cols" id="perf-top" hidden>
+        <section class="group span-2" id="health" aria-labelledby="health-title" hidden>
+          <h3 class="sec-title" id="health-title">Health check</h3>
+          <div class="card health">
+            <div class="health-top" id="health-top"></div>
+            <ul class="checks" id="health-list"></ul>
+            <p class="fine" id="health-fine"></p>
+          </div>
+        </section>
+
+        <section class="group span-2" id="board" aria-labelledby="board-title">
+          <div class="sec-head">
+            <h3 class="sec-title" id="board-title">Leaderboard</h3>
+            <div class="seg seg-sm" id="board-seg" role="radiogroup" aria-label="What to rank by">
+              <button type="button" role="radio" data-action="board-mode" data-k="money" aria-checked="true">Same deposits</button>
+              <button type="button" role="radio" data-action="board-mode" data-k="rate" aria-checked="false">Return</button>
+            </div>
+          </div>
+          <div class="card">
+            <p class="board-lede" id="board-lede"></p>
+            <div class="range-presets" id="board-presets" role="group" aria-label="Period" hidden></div>
+            <ol class="board" id="board-list"></ol>
+            <p class="fine" id="board-fine"></p>
+          </div>
+        </section>
+      </div>
+
       <div id="perf-body" class="cols" hidden>
         <section class="group span-2" id="perf-returns" aria-labelledby="perf-returns-title">
-          <h3 class="sec-title" id="perf-returns-title">Your return against the S&amp;P&nbsp;500</h3>
+          <h3 class="sec-title" id="perf-returns-title">Return over time</h3>
           <div class="card">
             <div class="range-presets" id="perf-presets" role="group" aria-label="Period"></div>
             <ul class="legend" id="perf-legend"></ul>
             <div class="chart" id="perf-chart"></div>
             <div class="table-scroll">
-              <table class="num-table" id="perf-table">
-                <thead><tr><th scope="col">Period</th><th scope="col">You</th><th scope="col">S&amp;P 500</th><th scope="col">Difference</th></tr></thead>
+              <table class="num-table matrix" id="perf-table">
+                <thead id="perf-thead"></thead>
                 <tbody id="perf-tbody"></tbody>
               </table>
             </div>
@@ -251,23 +306,29 @@
           </div>
         </section>
 
-        <section class="group" id="perf-years" aria-labelledby="perf-years-title">
-          <h3 class="sec-title" id="perf-years-title">Year by year</h3>
-          <div class="card">
-            <ul class="legend" id="perf-years-legend"></ul>
-            <div class="chart" id="perf-years-chart"></div>
-            <div class="table-scroll">
-              <table class="num-table">
-                <thead><tr><th scope="col">Year</th><th scope="col">You</th><th scope="col">S&amp;P 500</th><th scope="col">Difference</th></tr></thead>
-                <tbody id="perf-years-tbody"></tbody>
-              </table>
-            </div>
-          </div>
+        <section class="group" id="perf-risk" aria-labelledby="perf-risk-title" hidden>
+          <h3 class="sec-title" id="perf-risk-title">Risk</h3>
+          <div class="card kpis" id="perf-risk-tiles"></div>
+          <p class="fine" id="perf-risk-fine"></p>
         </section>
 
         <section class="group" id="perf-stats-sec" aria-labelledby="perf-stats-title">
           <h3 class="sec-title" id="perf-stats-title">Ups and downs</h3>
           <div class="card kpis" id="perf-stats"></div>
+        </section>
+
+        <section class="group span-2" id="perf-years" aria-labelledby="perf-years-title">
+          <h3 class="sec-title" id="perf-years-title">Year by year</h3>
+          <div class="card">
+            <ul class="legend" id="perf-years-legend"></ul>
+            <div class="chart" id="perf-years-chart"></div>
+            <div class="table-scroll">
+              <table class="num-table matrix">
+                <thead id="perf-years-thead"></thead>
+                <tbody id="perf-years-tbody"></tbody>
+              </table>
+            </div>
+          </div>
         </section>
 
         <section class="group span-2" id="perf-months" aria-labelledby="perf-months-title">
@@ -281,7 +342,7 @@
       </div>
 
       <section class="group" id="benchmark" aria-labelledby="bm-title">
-        <h3 class="sec-title" id="bm-title">The same deposits in the S&amp;P&nbsp;500</h3>
+        <h3 class="sec-title" id="bm-title">Market data</h3>
         <div class="card">
           <div id="bm-body"></div>
           <form id="spx-form" class="spx-form" hidden novalidate>
@@ -462,7 +523,7 @@
         </ul>
       </div>
       <div class="set-section">
-        <h3>S&amp;P 500 data</h3>
+        <h3>Market data</h3>
         <p class="note" id="set-spx"></p>
       </div>
       <div class="set-section">
@@ -470,6 +531,25 @@
         <p class="note">Clears the app. Your Excel file isn’t touched.</p>
         <p class="fine" id="set-version"></p>
       </div>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-picker" class="sheet" aria-labelledby="pick-title">
+  <form method="dialog" class="dlg-form">
+    <div class="dlg-head">
+      <h2 id="pick-title">Compare with</h2>
+      <button class="icon-btn" value="cancel" formnovalidate aria-label="Close">
+        <svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>
+      </button>
+    </div>
+    <div class="dlg-body">
+      <p class="note" id="pick-note"></p>
+      <div id="pick-list" class="pick-list"></div>
+      <p class="fine" id="pick-fine"></p>
+    </div>
+    <div class="dlg-foot end">
+      <button class="btn btn-primary" value="cancel" formnovalidate>Done</button>
     </div>
   </form>
 </dialog>
@@ -489,6 +569,7 @@
 <div class="toast" id="toast" role="status" aria-live="polite"><span class="toast-msg" id="toast-msg"></span><button type="button" id="toast-undo" data-action="undo" hidden>Undo</button></div>
 <noscript><p>This tracker needs JavaScript turned on.</p></noscript>
 <script src="spx-data.js" defer></script>
+<script src="bench-data.js" defer></script>
 <script src="calc.js" defer></script>
 <script src="xlsx.js" defer></script>
 <script src="app.js" defer></script>

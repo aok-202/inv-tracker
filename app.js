@@ -1,4 +1,4 @@
-/* build 2026-11-12.1 */
+/* build 2026-11-13.1 */
 /* app.js: the Investment Tracker interface. Loads after spx-data.js, calc.js and xlsx.js.
    Data lives in the Excel file you open. Nothing is sent anywhere, and nothing is stored
    unless you turn on "Keep a copy on this device". */
@@ -44,6 +44,7 @@ const ICON = {
   pace: '<svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="M10 6.8v6.4M6.8 10h6.4"/></svg>',
   peak: '<svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 16l5-8.5 3 4.5 2-3 5 7z"/></svg>',
   goal: '<svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="7"/><circle cx="10" cy="10" r="3"/></svg>',
+  swap: '<svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h11M12 4l3 3-3 3M16 13H5M8 10l-3 3 3 3"/></svg>',
   clock: '<svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="M10 6v4.2l2.8 1.8"/></svg>'
 };
 function iconBtn(icon, label, attrs) {
@@ -130,8 +131,79 @@ function ago(ms) {
   return 'on ' + dfLong.format(new Date(ms));
 }
 
+/* ---------- motion ----------
+   Things move when you do something: open a file, change tab, pick a period. Renders caused by anything else
+   (typing, an undo, new prices arriving) draw the finished picture at once. `fresh` names what plays next:
+   'tab' (everything on the tab being shown), or one part of it ('growth', 'perf', 'board', 'health'). */
+const fresh = new Set();
+const plays = k => !REDUCED && (fresh.has('tab') || fresh.has(k));
+/* redraw one part with its motion, in answer to a tap */
+function replay(k, fn) { fresh.add(k); try { fn(); } finally { fresh.clear(); } }
+const EASE = 'cubic-bezier(.2,.8,.2,1)';
+function anim(el, frames, opts) {
+  try { return el.animate(frames, Object.assign({ easing: EASE, fill: 'backwards' }, opts)); } catch (e) { return null; }
+}
+/* A chart draws itself: lines run left to right, filled areas and points fade in behind them. */
+function drawIn(svg) {
+  let k = 0;
+  svg.querySelectorAll('path.area, path.wedge, path.band').forEach(p => anim(p, [{ opacity: 0, offset: 0 }], { duration: 700, delay: 260, easing: 'ease-out' }));
+  svg.querySelectorAll('path.line').forEach(p => {
+    if (p.classList.contains('dash')) { anim(p, [{ opacity: 0, offset: 0 }], { duration: 500 }); return; }
+    let len = 0;
+    try { len = p.getTotalLength(); } catch (e) { len = 0; }
+    if (!(len > 0)) return;
+    p.style.strokeDasharray = len + ' ' + len;
+    const a = anim(p, [{ strokeDashoffset: len }, { strokeDashoffset: 0 }], { duration: 950, delay: 70 * k++, easing: 'cubic-bezier(.3,.6,.2,1)' });
+    const done = () => { p.style.strokeDasharray = ''; };
+    if (a) { a.onfinish = done; a.oncancel = done; } else done();
+  });
+  svg.querySelectorAll('circle.dot').forEach(c => anim(c, [{ opacity: 0, transform: 'scale(.3)', offset: 0 }], { duration: 320, delay: 880, easing: 'cubic-bezier(.3,1.5,.5,1)' }));
+  svg.querySelectorAll('line.ref, text.ref-label').forEach(c => anim(c, [{ opacity: 0, offset: 0 }], { duration: 400, delay: 700 }));
+}
+function growBars(svg) {
+  svg.querySelectorAll('path.bar').forEach((b, i) => anim(b, [{ transform: 'scaleY(0)', offset: 0 }], { duration: 560, delay: Math.min(i * 30, 420) }));
+  svg.querySelectorAll('text.val').forEach(t => anim(t, [{ opacity: 0, offset: 0 }], { duration: 300, delay: 520 }));
+}
+/* A number that counts up to its value. */
+function countUp(el, to, fmt, ms) {
+  if (REDUCED || !(Math.abs(to) > 0)) { el.textContent = fmt(to); return; }
+  const t0 = performance.now(), dur = ms || 700;
+  const step = now => {
+    const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+    el.textContent = fmt(to * e);
+    if (k < 1 && el.isConnected) requestAnimationFrame(step); else el.textContent = fmt(to);
+  };
+  el.textContent = fmt(0);
+  requestAnimationFrame(step);
+}
+/* The headline figure is an odometer: each digit is a strip of 0 to 9 that rolls to its number. Characters are
+   matched from the right, so the ones stay the ones when the amount gains or loses a digit. */
+function setOdometer(el, text, opts) {
+  opts = opts || {};
+  const chars = Array.from(text), old = el._od || [], out = [];
+  const plainText = !/\d/.test(text) || opts.plain;
+  if (plainText) { el._od = null; el.textContent = text; return; }
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i], digit = ch >= '0' && ch <= '9', prev = old[old.length - (chars.length - i)];
+    let node;
+    if (prev && prev.digit === digit && (digit || prev.ch === ch)) node = prev.node;
+    else if (digit) {
+      node = h('span', { class: 'od-c od-d' }, h('span', { class: 'od-s' }, '0\n1\n2\n3\n4\n5\n6\n7\n8\n9'));
+      if (!opts.instant && !REDUCED) node.firstChild.style.setProperty('--d', opts.from === 'zero' ? '0' : ch);
+    } else node = h('span', { class: 'od-c' }, ch);
+    out.push({ node, ch, digit });
+  }
+  if (!el._od) el.textContent = '';
+  el.replaceChildren(...out.map(o => o.node));
+  el._od = out;
+  const set = () => { for (const o of out) if (o.digit) o.node.firstChild.style.setProperty('--d', o.ch); };
+  if (opts.from === 'zero' && !REDUCED) { el.offsetWidth; requestAnimationFrame(set); } else set();
+  el.classList.toggle('quick', !!opts.quick);
+}
+
 /* ---------- state ---------- */
-function emptyState() { return { v: 1, deposits: [], value: null, history: [], settings: { cur: 'USD', spx: null, goal: null, plan: null }, updatedAt: 0 }; }
+function emptyState() { return { v: 1, deposits: [], value: null, history: [], settings: { cur: 'USD', spx: null, goal: null, plan: null, cmp: ['SPX', null, null], main: 'SPX' }, updatedAt: 0 }; }
+const BENCH_ID = /^[A-Z0-9._^-]{1,12}$/;
 function newId() { return Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-5); }
 function normalize(o) {
   const s = emptyState();
@@ -158,6 +230,15 @@ function normalize(o) {
         rate: rate >= 0 && rate <= 0.15 ? rate : 0.07
       };
     }
+    /* up to three things to compare with, each keeping its place (and so its colour), and which one is the main one */
+    const c = o.settings.cmp;
+    if (Array.isArray(c)) {
+      const seen = new Set();
+      const slots = [0, 1, 2].map(i => { const id = typeof c[i] === 'string' && BENCH_ID.test(c[i]) && !seen.has(c[i]) ? c[i] : null; if (id) seen.add(id); return id; });
+      if (slots.some(Boolean)) s.settings.cmp = slots;
+    }
+    const mn = o.settings.main;
+    s.settings.main = typeof mn === 'string' && s.settings.cmp.includes(mn) ? mn : s.settings.cmp.find(Boolean);
   }
   s.updatedAt = typeof o.updatedAt === 'number' ? o.updatedAt : 0;
   return s;
@@ -208,6 +289,7 @@ function makeExample(today) {
   s.value = { a: Math.round(v), d: dayToIso(today) };
   upsertHistory(s, s.value.d, s.value.a);
   s.settings.goal = 250000;
+  s.settings.cmp = ['SPX', 'VT', 'MIX'];
   return s;
 }
 
@@ -239,8 +321,80 @@ function dropCopy() { if (!storageOK) return; try { localStorage.removeItem(COPY
   if (c.state) { state = normalize(c.state); Object.assign(file, c.file || {}); mode = 'data'; }
 })();
 
-let anchors = buildAnchors(SPX, state.settings.spx);
-let anchorsKey = JSON.stringify(state.settings.spx);
+/* ---------- what your portfolio can be compared with ----------
+   The S&P 500 ships with the app (spx-data.js). Everything else comes from bench-data.js, which the daily data
+   job fills in; until it has, the list below shows those as "on the way". */
+const BENCH_DATA = (typeof BENCH !== 'undefined' && BENCH && Array.isArray(BENCH.series)) ? BENCH : { v: 1, updated: null, series: [] };
+const CATALOG = {
+  SPX: { short: 'S&P 500', name: 'S&P 500', group: 'US stocks', kind: 'stock', note: 'The 500 largest US companies' },
+  QQQ: { short: 'Nasdaq-100', name: 'Nasdaq-100', group: 'US stocks', kind: 'stock', note: 'Large US technology and growth companies (QQQ fund)' },
+  VTI: { short: 'US market', name: 'US total market', group: 'US stocks', kind: 'stock', note: 'Every listed US company (VTI fund)' },
+  DIA: { short: 'Dow Jones', name: 'Dow Jones', group: 'US stocks', kind: 'stock', note: '30 large US companies (DIA fund)' },
+  IWM: { short: 'US small caps', name: 'US small companies', group: 'US stocks', kind: 'stock', note: 'The Russell 2000 (IWM fund)' },
+  VT: { short: 'World', name: 'World stocks', group: 'World', kind: 'stock', note: 'Companies in every market, the US included (VT fund)' },
+  VEA: { short: 'Dev. ex-US', name: 'Developed ex-US', group: 'World', kind: 'stock', note: 'Europe, Japan and other developed markets (VEA fund)' },
+  VWO: { short: 'Emerging', name: 'Emerging markets', group: 'World', kind: 'stock', note: 'China, India, Brazil and others (VWO fund)' },
+  MIX: { short: '60/40', name: '60/40 mix', group: 'Bonds, cash and more', kind: 'mix', note: '60% S&P 500 and 40% US bonds, rebalanced every month' },
+  AGG: { short: 'US bonds', name: 'US bonds', group: 'Bonds, cash and more', kind: 'bond', note: 'Government and company bonds (AGG fund)' },
+  CASH: { short: 'Cash', name: 'Cash', group: 'Bonds, cash and more', kind: 'cash', note: '3-month US Treasury bills' },
+  CPI: { short: 'Inflation', name: 'US inflation', group: 'Bonds, cash and more', kind: 'prices', note: 'Consumer prices: what it takes just to keep up' },
+  GLD: { short: 'Gold', name: 'Gold', group: 'Bonds, cash and more', kind: 'other', note: 'The gold price (GLD fund)' },
+  BTC: { short: 'Bitcoin', name: 'Bitcoin', group: 'Bonds, cash and more', kind: 'other', note: 'The bitcoin price in US dollars' }
+};
+const GROUPS = ['US stocks', 'World', 'Bonds, cash and more', 'Other'];
+/* Stock and bond funds are the field your return is ranked in; cash, prices, gold and bitcoin are yardsticks beside it. */
+const isPeer = b => b.kind === 'stock' || b.kind === 'bond' || b.kind === 'mix';
+let benchRev = 0, benchCache = null;
+function validSeries(x) {
+  return !!x && typeof x.id === 'string' && BENCH_ID.test(x.id) && x.id !== 'SPX' && x.id !== 'MIX' && /^\d{4}-\d{2}$/.test(x.start || '') && Array.isArray(x.tr) && x.tr.length >= 2 &&
+    x.tr.every(v => typeof v === 'number' && v > 0) && !!x.last && /^\d{4}-\d{2}-\d{2}$/.test(x.last.d || '') && x.last.tr > 0;
+}
+function benchList() {
+  const key = benchRev + '|' + JSON.stringify(state.settings.spx);
+  if (benchCache && benchCache.key === key) return benchCache.list;
+  const list = [], byId = new Map();
+  const add = (id, A, extra) => {
+    const c = CATALOG[id] || {};
+    const b = Object.assign({ id, name: c.name || (extra && extra.name) || id, short: c.short || null, group: c.group || 'Other', kind: c.kind || 'stock', note: c.note || (extra && extra.code) || '',
+      A: A && A.length >= 2 ? A : null }, extra ? { priceOnly: !!extra.priceOnly, src: extra.src } : {});
+    b.avail = !!b.A;
+    b.startT = b.avail ? b.A[0].t : null;
+    b.lastT = b.avail ? b.A[b.A.length - 1].t : null;
+    list.push(b); byId.set(id, b);
+  };
+  add('SPX', buildAnchors(SPX, state.settings.spx), { src: 'spx' });
+  const stored = new Map(BENCH_DATA.series.filter(validSeries).map(x => [x.id, x]));
+  for (const id of Object.keys(CATALOG)) {
+    if (id === 'SPX') continue;
+    if (id === 'MIX') { const agg = byId.get('AGG') || (stored.has('AGG') ? { A: seriesAnchors(stored.get('AGG')) } : null); add('MIX', agg && agg.A ? blendAnchors([{ A: byId.get('SPX').A, w: 0.6 }, { A: agg.A, w: 0.4 }]) : null, { src: 'mix' }); continue; }
+    const x = stored.get(id);
+    add(id, x ? seriesAnchors(x) : null, x || null);
+  }
+  for (const [id, x] of stored) if (!CATALOG[id]) add(id, seriesAnchors(x), x);
+  /* keep the catalog's reading order: US stocks, world, then the rest */
+  list.sort((a, b) => GROUPS.indexOf(a.group) - GROUPS.indexOf(b.group));
+  benchCache = { key, list, byId };
+  return list;
+}
+const benchById = id => { benchList(); return benchCache.byId.get(id) || null; };
+/* The ones picked for the charts, in their places (a place keeps its colour), and the main one among them. */
+function cmpSlots() {
+  const s = state.settings.cmp.map(id => { const b = id ? benchById(id) : null; return b && b.avail ? b : null; });
+  /* a file can name picks whose data hasn't arrived yet: until it does, the S&P 500 stands in */
+  if (!s.some(Boolean)) s[0] = benchById('SPX');
+  return s;
+}
+function mainBench() {
+  const slots = cmpSlots();
+  const m = slots.find(b => b && b.id === state.settings.main) || slots.find(Boolean);
+  return m || benchById('SPX');
+}
+const slotOf = id => cmpSlots().findIndex(b => b && b.id === id);
+/* series classes: s0, s1, s2 are the three places; the main index keeps its place's colour everywhere */
+const slotCls = id => 's' + Math.max(0, slotOf(id));
+const mainName = () => mainBench().name;
+const theMain = () => { const n = mainName(); return /^(S&P|Nasdaq|Dow)/.test(n) ? 'the ' + n : n; };
+
 /* New S&P 500 prices, taken in without reloading the page. The text is this site's own
    spx-data.js, fetched by the offline helper (sw.js) on request: the page itself can't download. */
 let spxChecked = 0, spxBusy = false, swChecked = Date.now();
@@ -255,12 +409,27 @@ function applySpx(text) {
   SPX.tr = d.tr;
   SPX.last = d.last;
   if (d.div != null) SPX.div = d.div;
-  anchorsKey = null;
+  benchRev++;
+  return true;
+}
+/* The other indexes and funds, from this site's own bench-data.js. Taken when it holds something newer or more. */
+function applyBench(text) {
+  const m = /const BENCH = (\{[\s\S]*?\});/.exec(text || '');
+  if (!m) return false;
+  let d;
+  try { d = JSON.parse(m[1]); } catch (e) { return false; }
+  if (!d || !Array.isArray(d.series)) return false;
+  const next = d.series.filter(validSeries);
+  const stamp = list => list.map(x => x.id + ':' + x.tr.length + ':' + x.last.d).sort().join(',');
+  if (!next.length || stamp(next) === stamp(BENCH_DATA.series.filter(validSeries))) return false;
+  BENCH_DATA.series = next;
+  BENCH_DATA.updated = d.updated || null;
+  benchRev++;
   return true;
 }
 function checkSpx(manual) {
   if (!spxCanCheck()) {
-    if (manual) toast('Close the app fully and open it again to load the latest S&P 500 prices.', undefined, 6000);
+    if (manual) toast('Close the app fully and open it again to load the latest prices.', undefined, 6000);
     return;
   }
   if (spxBusy) return;
@@ -273,26 +442,25 @@ function checkSpx(manual) {
     finished = true;
     spxBusy = false;
     spxChecked = Date.now();
-    const updated = !!(reply && reply.ok && applySpx(reply.text));
-    if (updated) {
+    const had = BENCH_DATA.series.length;
+    const newSpx = !!(reply && reply.ok && applySpx(reply.text));
+    const newBench = !!(reply && reply.ok && applyBench(reply.bench));
+    if (newSpx || newBench) {
       render();
-      toast('S&P 500 prices updated to the close of ' + fmtDay(isoToDay(SPX.last.d)) + '.', undefined, 4500);
+      toast(!had && newBench ? 'More indexes and funds to compare with have arrived. Pick them under Performance.'
+        : newSpx ? 'Prices updated to the close of ' + fmtDay(isoToDay(SPX.last.d)) + '.' : 'Index and fund prices updated.', undefined, 4500);
     } else {
       if (lastM && mode !== 'welcome') renderBenchmark(lastM);
       renderSettings();
-      if (manual) toast(reply && reply.ok ? 'No newer S&P 500 prices yet. The latest close here is ' + fmtDay(isoToDay(SPX.last.d)) + '.'
-        : 'Couldn’t check for new S&P 500 prices. Make sure you’re online, then try again.', undefined, 5000);
+      if (manual) toast(reply && reply.ok ? 'No newer prices yet. The latest S&P 500 close here is ' + fmtDay(isoToDay(SPX.last.d)) + '.'
+        : 'Couldn’t check for new prices. Make sure you’re online, then try again.', undefined, 5000);
     }
   };
   setTimeout(() => finish(null), 20000);
   ch.port1.onmessage = e => finish(e.data);
-  try { navigator.serviceWorker.controller.postMessage({ type: 'spx-refresh' }, [ch.port2]); } catch (e) { finish(null); }
+  try { navigator.serviceWorker.controller.postMessage({ type: 'data-refresh' }, [ch.port2]); } catch (e) { finish(null); }
 }
-function getAnchors() {
-  const k = JSON.stringify(state.settings.spx);
-  if (k !== anchorsKey) { anchors = buildAnchors(SPX, state.settings.spx); anchorsKey = k; }
-  return anchors;
-}
+function getAnchors() { return mainBench().A; }
 
 /* Where the page runs inside an app that offers its own save prompt, files go through that. Otherwise this stays empty. */
 let downloadsCap = null;
@@ -350,6 +518,7 @@ const scrollPos = {};
 function setTab(t, opts) {
   opts = opts || {};
   if (!TABS.includes(t)) t = 'overview';
+  const prev = tab;
   if (t !== tab) scrollPos[tab] = window.scrollY;
   tab = t;
   for (const x of TABS) {
@@ -358,9 +527,40 @@ function setTab(t, opts) {
     b.setAttribute('aria-selected', String(x === t));
     b.tabIndex = x === t ? 0 : -1;
   }
+  $('#tab-ind').style.setProperty('--i', String(TABS.indexOf(t)));
+  if (!opts.quiet) fresh.add('tab');
   render();
   if (!opts.keepScroll) window.scrollTo(0, scrollPos[t] || 0);
+  /* the new tab slides in from the side it sits on */
+  if (t !== prev && !REDUCED && !opts.quiet) {
+    const dir = TABS.indexOf(t) > TABS.indexOf(prev) ? 1 : -1;
+    anim($('#view-' + t), [{ opacity: 0, transform: 'translateX(' + dir * 26 + 'px)' }, { opacity: 1, transform: 'none' }], { duration: 300, fill: 'none' });
+    const ic = $('#tabbtn-' + t + ' svg');
+    if (ic) anim(ic, [{ transform: 'scale(.82)' }, { transform: 'scale(1.12)', offset: 0.55 }, { transform: 'none' }], { duration: 380, fill: 'none' });
+  }
+  syncBar();
 }
+/* The top bar: when the page's own headline has scrolled away, the bar shows a small copy of it. */
+let barAt = Infinity;
+function syncBar() {
+  const bar = $('#topbar'), y = window.scrollY;
+  bar.classList.toggle('scrolled', y > 6);
+  bar.classList.toggle('compact', y > barAt);
+}
+function measureBar() {
+  const head = tab === 'overview' ? (mode === 'welcome' ? null : $('#hero-fig')) : $('#view-' + tab + ' .view-title');
+  if (!head || !head.offsetParent) { barAt = Infinity; syncBar(); return; }
+  barAt = head.getBoundingClientRect().bottom + window.scrollY - $('#topbar').offsetHeight - 4;
+  const title = $('#bar-mini-title'), sub = $('#bar-mini-sub');
+  if (tab === 'overview') {
+    title.textContent = $('#hero-value').textContent;
+    const pc = lastM && lastM.hasValue && lastM.roi != null ? pct(lastM.roi) : '';
+    sub.textContent = pc;
+    sub.className = 'bar-mini-sub ' + (pc ? (lastM.roi >= 0 ? 'good' : 'bad') : '');
+  } else { title.textContent = head.textContent; sub.textContent = ''; }
+  syncBar();
+}
+window.addEventListener('scroll', syncBar, { passive: true });
 
 /* ---------- rendering ---------- */
 let editing = null;
@@ -369,7 +569,20 @@ let histOpen = false, histAll = false, valueOpen = false;
 let spxOpen = false;
 const proj = { years: 10, annual: null, annualTouched: false, rate: 0.07, preset: '7' };
 const perf = { preset: 'all' };
-let lastM = null, lastG = null, lastP = null;
+let lastM = null, lastG = null, lastP = null, lastB = null;
+const board = { mode: 'money', period: 'all' };
+
+/* Everything there is to compare with, worked out once per render: the same deposits in each index,
+   and each index's return between your saved values. */
+function computeBench(M, G) {
+  const main = mainBench();
+  const rows = benchList().filter(b => b.avail).map(b => {
+    const isMain = b.id === main.id;
+    const P = G ? (isMain ? lastP : perfSeries(G, M.deps, b.A)) : null;
+    return { b, what: isMain ? M.sp : sameDeposits(M, b.A), P, periods: P ? perfPeriods(P) : [] };
+  });
+  return { main, rows, byId: new Map(rows.map(r => [r.b.id, r])) };
+}
 
 function render() {
   const A = getAnchors();
@@ -377,6 +590,7 @@ function render() {
   lastM = M;
   lastG = mode === 'welcome' ? null : growthSeries(M, state.history, A);
   lastP = lastG ? perfSeries(lastG, M.deps, A) : null;
+  lastB = mode === 'welcome' ? null : computeBench(M, lastG);
   const sym = curSymbol();
   $$('[data-cur]').forEach(el => {
     el.textContent = sym;
@@ -392,13 +606,17 @@ function render() {
   if (tab === 'overview') {
     if (!welcome) {
       $('#overview-more').hidden = !M.count && !M.hasValue;
-      renderGrowth(M); renderValueForm(M); renderKpis(M); renderHighlights(M); renderYears(M);
+      $('#growth-more').hidden = !lastG;
+      renderGrowth(M); renderValueForm(M); renderVerdict(M); renderKpis(M); renderHighlights(M); renderYears(M);
     }
   }
-  else if (tab === 'deposits') renderLedger(M);
+  else if (tab === 'deposits') { renderLedger(M); slideThumb($('#kind-dep').parentElement); }
   else if (tab === 'performance') renderPerformance(M);
   else renderPlan(M);
   renderSettings();
+  if (dlgPicker.open) renderPicker();
+  fresh.clear();
+  measureBar();
 }
 
 function renderHeader() {
@@ -435,6 +653,7 @@ function renderBanner() {
     b.append(h('p', null, h('strong', null, 'Not saved to Excel yet. '), keepCopy ? 'Your changes are kept on this device for now.' : 'Save before you close the app, or your changes are lost.'),
       h('div', { class: 'banner-actions' }, h('button', { class: 'btn btn-primary btn-sm', type: 'button', 'data-action': 'save' }, 'Save to Excel')));
   } else b.hidden = true;
+  document.body.classList.toggle('has-banner', !b.hidden);
 }
 
 /* ---------- the headline: your value, and what changed over the period on the chart ---------- */
@@ -463,31 +682,40 @@ function fitTiles(box) { for (const el of box.querySelectorAll('.kpi-value')) fi
 function paintHero(read) {
   const M = lastM;
   if (!M || mode === 'welcome') return;
-  const valEl = $('#hero-value'), chips = $('#hero-chips'), meta = $('#hero-asof');
+  const fig = $('#hero-fig'), valText = $('#hero-value'), chips = $('#hero-chips'), meta = $('#hero-asof'), stage = $('#hero');
   const G = gz.G, V = gz.V;
-  $('#hero').classList.toggle('reading', !!read);
-  valEl.classList.toggle('none', read ? read.value == null : !M.hasValue);
+  stage.classList.toggle('reading', !!read);
   fill(chips);
+  let text, trend = null;
   if (read) {
-    valEl.textContent = read.value != null ? money(read.value, { dec: 0 }) : 'No value saved';
-    if (read.value != null) chips.append(...changeParts(read.value - read.dep, read.dep > 0 ? (read.value - read.dep) / read.dep : null, 'on ' + money(read.dep, { dec: 0 }) + ' deposited'));
-    else chips.append(h('span', { class: 'chg-label' }, money(read.dep, { dec: 0 }) + ' deposited by then'));
+    text = read.value != null ? money(read.value, { dec: 0 }) : 'No value saved';
+    if (read.value != null) {
+      trend = read.value - read.dep;
+      chips.append(...changeParts(read.value - read.dep, read.dep > 0 ? (read.value - read.dep) / read.dep : null, 'on ' + money(read.dep, { dec: 0 }) + ' deposited'));
+    } else chips.append(h('span', { class: 'chg-label' }, money(read.dep, { dec: 0 }) + ' deposited by then'));
     meta.textContent = fmtDay(read.t);
   } else {
-    valEl.textContent = M.hasValue ? money(M.V, { dec: 0 }) : 'No value yet';
+    text = M.hasValue ? money(M.V, { dec: 0 }) : 'No value yet';
     const c = G && V && M.hasValue && isZoomed(G, V) ? V.cmp : null;
     const latest = G && G.vals.length ? G.vals[G.vals.length - 1].t : null;
     if (c && c.problem) chips.append(h('span', { class: 'chg-label' }, 'This period needs saved values inside it to show a change.'));
     else if (c && !(c.fromStart && c.t1 === latest)) {
       const label = c.t1 === latest ? 'since ' + fmtDay(c.t0) : c.fromStart ? 'up to ' + fmtDay(c.t1) : fmtDay(c.t0) + ' to ' + fmtDay(c.t1);
       chips.append(...changeParts(c.gainV, c.retV, label));
-    } else if (M.hasValue && M.gain != null) chips.append(...changeParts(M.gain, M.roi, 'all time'));
+      trend = c.gainV;
+    } else if (M.hasValue && M.gain != null) { chips.append(...changeParts(M.gain, M.roi, 'all time')); trend = M.gain; }
     if (M.hasValue) {
       const age = M.today - M.vDay;
       meta.textContent = 'As of ' + fmtDate(state.value.d) + (age > 31 ? ', ' + age + ' days ago' : '');
     } else meta.textContent = M.count ? 'Add your portfolio’s value to see your returns.' : 'Add your deposits, then your portfolio’s value, to see your returns.';
   }
-  fitFigure(valEl);
+  const none = read ? read.value == null : !M.hasValue;
+  valText.textContent = text;
+  fig.parentElement.classList.toggle('none', none);
+  /* the light behind the chart follows the result: up or down over what is shown */
+  stage.dataset.trend = trend == null ? 'flat' : trend >= 0 ? 'up' : 'down';
+  setOdometer(fig, text, { plain: none || hideAmounts, quick: !!read, from: fig._od ? null : 'zero' });
+  fitFigure(fig, 30, fig.parentElement);
 }
 
 /* ---------- updating the value (opens under the headline) ---------- */
@@ -552,8 +780,8 @@ function renderKpis(M) {
     { label: 'ROI', value: pct(M.roi), tone: tone(M.roi), cap: M.hasValue ? 'Gain ÷ deposits' : 'Needs your current value' },
     { label: 'CAGR', value: perYr(M.cagr), tone: tone(M.cagr), cap: '(Value ÷ deposits)​^(1/years) − 1' },
     { label: 'Yearly return (XIRR)', value: perYr(M.xirr), tone: tone(M.xirr), cap: 'Counts how long each deposit was invested' },
-    { label: 'Against the S&P 500', value: M.sp.diff != null ? money(M.sp.diff, { sign: true, dec: 0 }) : '—', tone: tone(M.sp.diff),
-      cap: M.sp.value != null ? 'Same deposits in the index: ' + money(M.sp.value, { dec: 0 }) : (M.sp.unavailable ? 'Index data starts in 1985' : 'Needs deposits and a value') }
+    { label: 'Against ' + theMain(), value: M.sp.diff != null ? money(M.sp.diff, { sign: true, dec: 0 }) : '—', tone: tone(M.sp.diff),
+      cap: M.sp.value != null ? 'Same deposits in it: ' + money(M.sp.value, { dec: 0 }) : (M.sp.unavailable ? 'Its data starts after your first deposit' : 'Needs deposits and a value') }
   ]));
   fitTiles($('#kpis'));
 }
@@ -582,8 +810,25 @@ function buildHighlights(M) {
     if (ytd) {
       const net = flowsBetween(M.deps, ytd.t0, ytd.t1), gain = P.pts[ytd.j].a - P.pts[ytd.i].a - net;
       add('cal', 'plain', dayYear(ytd.t1) + ' so far: your investments ' + (gain >= 0 ? 'gained ' : 'lost '), B(money(Math.abs(gain), { dec: 0 })),
-        ' (' + pct(ytd.you) + ')' + (ytd.sp != null ? ', while the S&P 500 returned ' + pct(ytd.sp) : '') + '.');
+        ' (' + pct(ytd.you) + ')' + (ytd.sp != null ? ', while ' + theMain() + ' returned ' + pct(ytd.sp) : '') + '.');
     }
+  }
+  /* what else the same deposits could have become, among the stock and bond funds there is data for */
+  const Bn = lastB;
+  if (Bn) {
+    const alts = Bn.rows.filter(r => isPeer(r.b) && r.what.value != null).sort((a, b) => b.what.value - a.what.value);
+    if (alts.length >= 3) {
+      const top = alts[0];
+      if (top.what.value > M.V) add('swap', 'plain', 'The same deposits in ', B(top.b.name), ' would be worth ' + money(top.what.value, { dec: 0 }) + ', ' + money(top.what.value - M.V, { dec: 0 }) + ' more than you have. It did best of the ' + alts.length + ' funds here.');
+      else add('swap', 'good', B('None of the ' + alts.length + ' funds'), ' here would have made more of your deposits.');
+    }
+  }
+  /* money-weighted against time-weighted: the gap is what the timing of your deposits did */
+  const whole = P ? perfPeriods(P).find(r => r.k === 'all') : null;
+  if (whole && whole.youAnn != null && M.xirr != null && M.first != null && Math.abs(P.t0 - M.first) <= 45 && P.t1 === M.vDay) {
+    const d = M.xirr - whole.youAnn;
+    if (Math.abs(d) >= 0.005) add('clock', d > 0 ? 'good' : 'plain', 'When you paid in ', B((d > 0 ? 'added ' : 'cost ') + num(Math.abs(d) * 100, 1) + ' points a year'),
+      ': your money earned ' + pct(M.xirr) + ' a year, the investments themselves ' + pct(whole.youAnn) + '.');
   }
   if (M.gain > 0 && M.V > 0) add('pie', 'plain', 'Growth makes up ', B(pct(M.gain / M.V, { sign: false, dec: 0 })), ' of your portfolio. The rest is money you paid in.');
   const jan1 = Math.round(Date.UTC(M.cy, 0, 1) / DAY_MS), frac = (M.today - jan1 + 1) / 365.25;
@@ -600,7 +845,7 @@ function buildHighlights(M) {
       add('goal', 'plain', B(pct(M.V / goal, { sign: false, dec: 0 })), ' of the way to your ' + money(goal, { dec: 0 }) + ' goal' + (m != null ? '. At your planned pace you’d get there around ' + monthAhead(m) : '') + '.');
     }
   }
-  return out.slice(0, 5);
+  return out.slice(0, 6);
 }
 function renderHighlights(M) {
   const items = buildHighlights(M);
@@ -724,7 +969,7 @@ function lineChart(box, o) {
       else d += 'L' + x + ' ' + y;
     });
     if (s.area) svg.append(sv('path', { d: d + 'V' + baseY.toFixed(1) + 'H' + X(s.pts[0][0]).toFixed(1) + 'Z', class: 'area f-' + s.cls }));
-    svg.append(sv('path', { d, class: 'line s-' + s.cls + (s.thin ? ' thin' : '') + (s.dash ? ' dash' : '') }));
+    svg.append(sv('path', { d, class: 'line s-' + s.cls + (s.thin ? ' thin' : '') + (s.dash ? ' dash' : '') + (s.glow ? ' glow' : '') }));
     if (s.dots) for (const p of (s.dotPts || s.pts)) svg.append(sv('circle', { cx: X(p[0]).toFixed(1), cy: Y(p[1]).toFixed(1), r: 3.5, class: 'dot f-' + s.cls }));
     if (s.end) { const p = s.endPt || s.pts[s.pts.length - 1]; svg.append(sv('circle', { cx: X(p[0]).toFixed(1), cy: Y(p[1]).toFixed(1), r: 4.5, class: 'dot end f-' + s.cls })); }
   }
@@ -740,6 +985,7 @@ function lineChart(box, o) {
   svg.append(xh, fg);
   if (hit) svg.append(hit);
   box.append(svg);
+  if (o.animate) drawIn(svg);
   const tip = o.tip === false ? null : h('div', { class: 'tip', hidden: true });
   if (tip) box.append(tip);
   let curI = -1;
@@ -823,7 +1069,7 @@ function barChart(box, o) {
   const barEls = [];
   o.bars.forEach((b, i) => {
     const cx = ml + band * (i + 0.5), yv = Y(b.value);
-    const p = Math.abs(yv - y0) >= 0.5 ? sv('path', { d: roundedBar(cx - bw / 2, bw, y0, yv, 4), class: 'bar f-' + o.cls + (b.faded ? ' faded' : '') }) : sv('g');
+    const p = Math.abs(yv - y0) >= 0.5 ? sv('path', { d: roundedBar(cx - bw / 2, bw, y0, yv, 4), class: 'bar f-' + o.cls + (b.faded ? ' faded' : '') + (b.value < 0 ? ' neg' : '') }) : sv('g');
     svg.append(p); barEls.push(p);
     if ((n - 1 - i) % every === 0) svg.append(sv('text', { x: cx, y: H - 8, 'text-anchor': 'middle' }, useShort ? b.short : b.label));
     const vl = o.valueLabel(b.value);
@@ -857,6 +1103,7 @@ function barChart(box, o) {
     svg.append(r);
   });
   box.append(svg, tip);
+  if (o.animate) growBars(svg);
   box.tabIndex = 0;
   box.setAttribute('aria-label', o.label + '. Use the left and right arrow keys to read values.');
   box.onkeydown = e => {
@@ -953,7 +1200,7 @@ function renderGrowth(M) {
   }
   $('#growth').hidden = false;
   drawSpark(G);
-  drawGrowth();
+  drawGrowth(plays('growth'));
   growthTable(G);
 }
 
@@ -977,14 +1224,19 @@ function wedgePath(vline, pts) {
   return out;
 }
 
-function drawGrowth() {
+function drawGrowth(play) {
   const G = gz.G, M = gz.M;
   if (!G || mode === 'welcome') return;
   const zoomable = canZoom(G), w = currentWindow(G), zoomed = isZoomed(G, w);
-  const V = windowSeries(G, M.deps, getAnchors(), w.a, w.b);
+  const main = mainBench();
+  const V = windowSeries(G, M.deps, main.A, w.a, w.b);
   gz.V = V;
+  /* The other picks are sampled on the same days, so their points line up with the main one's by position. */
+  const picks = [{ b: main, pts: V.pts }].concat(cmpSlots().filter(b => b && b.id !== main.id)
+    .map(b => ({ b, pts: windowSeries(Object.assign({}, G, { spOK: G.start >= b.startT }), M.deps, b.A, w.a, w.b).pts })));
+  picks.sort((x, y) => slotOf(x.b.id) - slotOf(y.b.id));
+  const lines = picks.map(x => ({ b: x.b, cls: slotCls(x.b.id), at: new Map(x.pts.map(p => [p.t, p.sp])), pts: x.pts.filter(p => p.sp != null).map(p => [p.t, p.sp]) })).filter(x => x.pts.length);
   const plot = $('#growth-plot');
-  const spPts = V.pts.filter(p => p.sp != null).map(p => [p.t, p.sp]);
   const lastReal = V.vin.length ? V.vin[V.vin.length - 1] : null;
   /* A value for every day would make a scribble: draw the last of each week or month instead (whichever fits),
      always with the first and latest. Zooming in brings the detail back. The numbers still use every value. */
@@ -997,35 +1249,35 @@ function drawGrowth() {
   }
   const series = [{ cls: 'dep', type: 'step', area: true, pts: V.pts.map(p => [p.t, p.dep]) }];
   if (vline.length > 1) series.push({ cls: 'value', type: 'wedge', pts: wedgePath(vline, V.pts) });
-  if (spPts.length) series.push({ cls: 'sp', type: 'line', thin: true, end: true, pts: spPts });
-  if (vline.length) series.push({ cls: 'value', type: 'line', pts: vline, dots: drawn.length <= 14, dotPts: drawn.map(v => [v.t, v.a]), end: !!lastReal, endPt: lastReal ? [lastReal.t, lastReal.a] : null });
+  for (const l of lines) series.push({ cls: l.cls, type: 'line', thin: true, end: true, pts: l.pts });
+  if (vline.length) series.push({ cls: 'value', type: 'line', glow: true, pts: vline, dots: drawn.length <= 14, dotPts: drawn.map(v => [v.t, v.a]), end: !!lastReal, endPt: lastReal ? [lastReal.t, lastReal.a] : null });
   const valBy = new Map(V.vin.map(v => [v.t, v.a]));
-  /* Reading the chart stops at your own values (the points on the line), so every stop shows your
-     portfolio next to the S&P 500 and your deposits. With no values in view it stops at deposits and month ends. */
+  /* Reading the chart stops at your own values (the points on the line), so every stop shows your portfolio
+     next to the indexes and your deposits. With no values in view it stops at deposits and month ends. */
   const ptBy = new Map(V.pts.map(p => [p.t, p]));
   const stops = drawn.length >= 2 ? drawn.map(v => v.t).filter(t => ptBy.has(t)) : V.pts.map(p => p.t);
   const lastP = V.pts[V.pts.length - 1];
   /* The legend carries the numbers: for the end of the period, or for the point being read. */
   const paintLegend = p => {
-    const spV = p ? p.sp : spPts.length ? spPts[spPts.length - 1][1] : null;
     const youV = p ? (valBy.has(p.t) ? valBy.get(p.t) : null) : lastReal ? lastReal.a : null;
     const box = $('#growth-legend'), depV = (p || lastP).dep;
-    /* three figures share the row: when full amounts won't fit a narrow phone, all three go short (12.3M) */
+    const bm = lines.map(l => ({ l, v: p ? l.at.get(p.t) : l.pts[l.pts.length - 1][1] }));
+    /* the figures share a row: when full amounts won't fit a narrow phone, they all go short (12.3M) */
     let fmt = v => (v == null ? '—' : money(v, { dec: 0 }));
     const colW = ((box.clientWidth || 340) - 24) / 3;
-    if (!isWide() && [youV, spV, depV].some(v => textW(fmt(v), 16) * 1.12 > colW)) fmt = v => (v == null ? '—' : money(v, { compact: true }));
+    if (!isWide() && [youV, depV].concat(bm.map(x => x.v)).some(v => textW(fmt(v), 16) * 1.12 > colW)) fmt = v => (v == null ? '—' : money(v, { compact: true }));
     fill(box,
       vline.length ? legendItem('value', 'You', fmt(youV)) : null,
-      spV != null ? legendItem('sp', 'S&P 500', fmt(spV)) : null,
+      ...bm.map(x => legendItem(x.l.cls, x.l.b.short || x.l.b.name, fmt(x.v))),
       legendItem('dep', 'Deposited', fmt(depV), true));
   };
   gz.api = lineChart(plot, {
-    height: isWide() ? 320 : 230, x0: w.a, x1: w.b, external: true, tip: false, yZero: !zoomed, padL: isWide() ? 0 : 8, padR: isWide() ? 0 : 6,
+    height: isWide() ? 330 : 236, x0: w.a, x1: w.b, external: true, tip: false, yZero: !zoomed, padL: isWide() ? 0 : 8, padR: isWide() ? 0 : 6, animate: play,
     xTicks: timeTicks(w.a, w.b, plot.clientWidth || 600),
     series, yFmt: yMoney, samples: stops,
     focus: i => {
       const p = ptBy.get(stops[i]), f = [{ cls: 'dep', x: p.t, y: p.dep }];
-      if (p.sp != null) f.push({ cls: 'sp', x: p.t, y: p.sp });
+      for (const l of lines) { const v = l.at.get(p.t); if (v != null) f.push({ cls: l.cls, x: p.t, y: v }); }
       if (valBy.has(p.t)) f.push({ cls: 'value', x: p.t, y: valBy.get(p.t) });
       return f;
     },
@@ -1034,13 +1286,15 @@ function drawGrowth() {
       paintLegend(p);
       paintHero(p ? { t: p.t, value: valBy.has(p.t) ? valBy.get(p.t) : null, dep: p.dep } : null);
     },
-    label: 'Line chart' + (zoomed ? ' from ' + fmtDay(w.a) + ' to ' + fmtDay(w.b) : '') + ': money deposited, your portfolio value, and ' + (V.rebased ? 'the S&P 500 starting from your value on ' + fmtDay(V.cmp.t0) : 'the same deposits in the S&P 500') + ', over time'
+    label: 'Line chart' + (zoomed ? ' from ' + fmtDay(w.a) + ' to ' + fmtDay(w.b) : '') + ': money deposited, your portfolio value, and ' +
+      (V.rebased ? lines.map(l => l.b.name).join(', ') + ' starting from your value on ' + fmtDay(V.cmp.t0) : 'the same deposits in ' + (lines.map(l => l.b.name).join(', ') || 'an index')) + ', over time'
   });
   $('#growth-chart').classList.toggle('zoomed', zoomed);
   $('#growth-nav').hidden = !zoomable;
   if (zoomable) navLayout(G, w);
   renderPresets(G, zoomable);
-  const spNote = spPts.length && !V.rebased ? 'S&P 500: your deposits, put into the index on the same days. ' : '';
+  const names = lines.map(l => l.b.short || l.b.name);
+  const spNote = lines.length && !V.rebased ? (names.length > 1 ? 'The other lines: ' : names[0] + ': ') + 'your deposits, put into ' + (names.length > 1 ? 'each one' : 'it') + ' on the same days. ' : '';
   $('#growth-window').textContent = zoomed ? fmtDay(w.a) + ' to ' + fmtDay(w.b) + ' (' + spanText(w.b - w.a) + ')'
     : spNote + (zoomable ? 'Pinch the chart or drag the handles for a shorter period.' : '');
   renderCompare(V, zoomed);
@@ -1048,11 +1302,28 @@ function drawGrowth() {
   paintHero(null);
 }
 
+/* Period buttons with a pill that slides to the one in use. */
+const thumbAt = new WeakMap();
+function slideThumb(box) {
+  const btn = box.querySelector('[aria-pressed="true"], [aria-checked="true"]');
+  let th = box.querySelector(':scope > .thumb');
+  if (!btn || !btn.offsetWidth) { if (th) th.remove(); thumbAt.delete(box); return; }
+  const made = !th;
+  if (made) { th = h('span', { class: 'thumb', 'aria-hidden': 'true' }); box.prepend(th); }
+  const now = { x: btn.offsetLeft, y: btn.offsetTop, w: btn.offsetWidth, h: btn.offsetHeight }, was = thumbAt.get(box);
+  const place = r => { th.style.width = r.w + 'px'; th.style.height = r.h + 'px'; th.style.transform = 'translate(' + r.x + 'px,' + r.y + 'px)'; };
+  /* a pill made just now starts where the last one stood, then slides */
+  if (made) { th.style.transition = 'none'; place(was && !REDUCED ? was : now); th.offsetWidth; th.style.transition = ''; }
+  place(now);
+  thumbAt.set(box, now);
+}
+
 function renderPresets(G, zoomable) {
   const box = $('#growth-presets');
-  if (!zoomable) { fill(box); return; }
+  if (!zoomable) { fill(box); thumbAt.delete(box); return; }
   fill(box, ...PRESETS.filter(p => presetRange(G, p.k)).map(p =>
     h('button', { type: 'button', 'data-action': 'zoom-preset', 'data-k': p.k, 'aria-label': p.name, 'aria-pressed': String(zoom.preset === p.k) }, p.label)));
+  slideThumb(box);
 }
 
 function renderCompare(V, zoomed) {
@@ -1062,9 +1333,10 @@ function renderCompare(V, zoomed) {
   const c = V.cmp;
   const addLink = () => (mode === 'example' ? null : h('button', { type: 'button', class: 'link', 'data-action': 'open-import', 'data-target': 'values' }, 'Add many values'));
   if (c.problem) {
-    const msg = c.problem === 'nosp' ? 'The S&P 500 data here starts in January 1985, so this period can’t be compared with it.'
-      : c.fromStart ? 'To compare this period with the S&P 500, the app needs your portfolio value on a date inside it.'
-        : 'To compare this period with the S&P 500, the app needs your portfolio value on at least two dates inside it.';
+    const mb = mainBench(), nm = theMain();
+    const msg = c.problem === 'nosp' ? 'The data for ' + nm + ' starts in ' + dfMonthYear.format(new Date(mb.startT * DAY_MS)) + ', so this period can’t be compared with it.'
+      : c.fromStart ? 'To compare this period with ' + nm + ', the app needs your portfolio value on a date inside it.'
+        : 'To compare this period with ' + nm + ', the app needs your portfolio value on at least two dates inside it.';
     fill(box, h('p', { class: 'note' }, msg + ' ', c.problem === 'nosp' ? null : addLink()));
     return;
   }
@@ -1078,12 +1350,12 @@ function renderCompare(V, zoomed) {
     h('p', { class: 'cmp-title' }, (c.fromStart ? 'Your first deposit, ' + fmtDay(c.t0) : fmtDay(c.t0)) + ' to ' + fmtDay(c.t1)),
     h('div', { class: 'table-scroll' }, h('table', { class: 'num-table cmp-table' },
       h('thead', null, h('tr', null, h('th', { scope: 'col' }, h('span', { class: 'sr-only' }, 'Investment')), h('th', { scope: 'col' }, 'Gain'), h('th', { scope: 'col' }, 'Return'))),
-      h('tbody', null, row('value', 'Your portfolio', c.gainV, c.retV), row('sp', 'S&P 500', c.gainS, c.retS)))),
+      h('tbody', null, row('value', 'Your portfolio', c.gainV, c.retV), row(slotCls(mainBench().id), mainName(), c.gainS, c.retS)))),
     h('p', { class: 'verdict' },
       h('span', { class: 'pill ' + (ahead ? 'pill-good' : 'pill-bad') }, h('span', { 'aria-hidden': 'true' }, ahead ? '▲' : '▼'),
-        money(Math.abs(c.diff), { dec: 0 }) + (ahead ? ' ahead of' : ' behind') + ' the S&P 500')),
+        money(Math.abs(c.diff), { dec: 0 }) + (ahead ? ' ahead of ' : ' behind ') + theMain())),
     h('p', { class: 'fine' }, c.fromStart
-      ? 'Gains after deposits. The S&P 500 side gets the same deposits on the same days. Return counts each deposit from the day it went in.'
+      ? 'Gains after deposits. The other side gets the same deposits on the same days. Return counts each deposit from the day it went in.'
       : 'Gains after deposits. Both start from your ' + money(c.V0, { dec: 0 }) + ' on ' + fmtDay(c.t0) + ' and ' + flows + '. Return counts each deposit from the day it went in.'));
 }
 
@@ -1100,7 +1372,7 @@ function growthTable(G) {
       h('td', null, valBy.has(t) ? money(valBy.get(t), { dec: 0 }) : '—'), h('td', null, p.sp != null ? money(p.sp, { dec: 0 }) : '—'));
   });
   fill($('#growth-table'), h('table', { class: 'num-table' },
-    h('thead', null, h('tr', null, h('th', { scope: 'col' }, 'Date'), h('th', { scope: 'col' }, 'Deposited'), h('th', { scope: 'col' }, 'Your portfolio'), h('th', { scope: 'col' }, 'S&P 500, same deposits'))),
+    h('thead', null, h('tr', null, h('th', { scope: 'col' }, 'Date'), h('th', { scope: 'col' }, 'Deposited'), h('th', { scope: 'col' }, 'Your portfolio'), h('th', { scope: 'col' }, mainName() + ', same deposits'))),
     h('tbody', null, trs)));
 }
 
@@ -1331,46 +1603,31 @@ gTouch.addEventListener('wheel', e => {
   }
 }, { passive: false });
 
+/* Where the prices come from and how fresh they are. */
 function renderBenchmark(M) {
   if (mode === 'welcome') return;
-  const body = $('#bm-body'), sp = M.sp;
+  const body = $('#bm-body'), spx = benchById('SPX'), lastA = spx.A[spx.A.length - 1], main = mainBench();
   $('#spx-form').hidden = !spxOpen;
   $('#spx-clear').hidden = !state.settings.spx;
   const parts = [];
-  if (!M.count) {
-    parts.push(h('p', { class: 'empty' }, 'Add deposits to see what the same money would have done in the S&P 500.'));
-  } else if (sp.unavailable === 'early') {
-    parts.push(h('p', { class: 'empty' }, 'The S&P 500 data here starts in January 1985, and your first deposit is earlier, so this comparison isn’t available.'));
-  } else if (sp.value != null) {
-    const when = M.hasValue ? 'on ' + fmtDay(sp.endT) : 'today';
-    parts.push(h('p', { class: 'lede' }, 'If each deposit had gone into the S&P 500 on the same day, with dividends reinvested, it would be worth ', h('strong', null, money(sp.value, { dec: 0 })), ' ' + when + '.'));
-    const max = Math.max(sp.value, M.hasValue ? M.V : 0, 1);
-    const row = (cls, name, amt, rate) => h('div', { class: 'vs-row' },
-      h('span', { class: 'vs-name' }, h('i', { class: 'key key-' + cls }), name),
-      h('span', { class: 'vs-amt' }, money(amt, { dec: 0 })),
-      h('div', { class: 'vs-track', 'aria-hidden': 'true' }, h('i', { class: 't-' + cls, style: { width: Math.max(1, (Math.max(0, amt) / max) * 100).toFixed(1) + '%' } })),
-      h('span', { class: 'vs-rate' }, rate));
-    const vs = h('div', { class: 'vs' });
-    if (M.hasValue) vs.append(row('value', 'Your portfolio', M.V, M.xirr != null ? pct(M.xirr) + ' a year (XIRR)' : 'A yearly return needs at least a month of history'));
-    vs.append(row('sp', 'S&P 500, same deposits', sp.value, sp.xirr != null ? pct(sp.xirr) + ' a year (XIRR)' : 'Index up ' + pct(sp.periodReturn) + ' since your first deposit'));
-    parts.push(vs);
-    if (M.hasValue && sp.diff != null) {
-      const ahead = sp.diff >= 0;
-      const gap = M.xirr != null && sp.xirr != null ? (M.xirr - sp.xirr) * 100 : null;
-      parts.push(h('p', { class: 'verdict' },
-        h('span', { class: 'pill ' + (ahead ? 'pill-good' : 'pill-bad') }, h('span', { 'aria-hidden': 'true' }, ahead ? '▲' : '▼'), money(Math.abs(sp.diff), { dec: 0 }) + (ahead ? ' ahead' : ' behind')),
-        h('span', null, gap != null ? (Math.abs(gap) < 0.05 ? 'Level with the index.' : num(Math.abs(gap), 1) + ' percentage points a year ' + (gap >= 0 ? 'better' : 'worse') + ' than the index.') : '')));
-    }
-    if (sp.stale) parts.push(h('p', { class: 'warn-note mt-12' }, 'Your value is dated after the last S&P close stored here (' + fmtDay(sp.lastDay) + '), so the S&P side stops on that day. Add a newer close below for a like-for-like comparison.'));
-  } else {
-    parts.push(h('p', { class: 'empty' }, 'Add deposits and your current value to compare.'));
-  }
-  parts.push(h('p', { class: 'fine' },
-    'S&P 500 total return (dividends reinvested), month-end data from 1985 to the close of ' + fmtDay(sp.lastDay) + ' at ' + num(sp.lastPx, 2) + (sp.user ? ', which you added' : '') + '. ',
-    cur() !== 'USD' ? 'Assumes your deposits were in US dollars; currency moves aren’t included. ' : '',
+  const others = benchList().filter(b => b.avail && b.id !== 'SPX' && b.id !== 'MIX');
+  if (M.sp.stale) parts.push(h('p', { class: 'warn-note' }, 'Your value is dated after the last close stored here for ' + theMain() + ' (' + fmtDay(M.sp.lastDay) + '), so its side of each comparison stops on that day.' + (main.id === 'SPX' ? ' Add a newer close below for a like-for-like comparison.' : '')));
+  if (M.sp.unavailable === 'early') parts.push(h('p', { class: 'warn-note' }, 'The data for ' + theMain() + ' starts in ' + dfMonthYear.format(new Date(main.startT * DAY_MS)) + ', after your first deposit, so the same-deposits comparison isn’t available for it.'));
+  parts.push(h('p', { class: 'fine first' },
+    'S&P 500 total return (dividends reinvested), month-end data from 1985 to the close of ' + fmtDay(lastA.t) + ' at ' + num(lastA.px, 2) + (lastA.user ? ', which you added' : '') + '. ',
     spxCanCheck() ? h('button', { type: 'button', class: 'link', 'data-action': 'check-spx' }, spxBusy ? 'Checking…' : 'Check for new prices') : null,
     spxCanCheck() && !(spxOpen || mode === 'example') ? ' ' : null,
     spxOpen || mode === 'example' ? null : h('button', { type: 'button', class: 'link', 'data-action': 'edit-spx' }, 'Add a newer close')));
+  if (others.length) {
+    const newest = Math.max(...others.map(b => b.lastT)), late = others.filter(b => b.lastT < newest - 45 && b.kind !== 'prices');
+    parts.push(h('p', { class: 'fine' }, others.length + ' more indexes and funds, to ' + fmtDay(newest) + '. Funds stand in for their indexes: their prices include dividends and running costs. ' +
+      (others.some(b => b.id === 'CPI') ? 'Inflation is the US consumer price index, which comes out a few weeks after each month ends. ' : '') +
+      (late.length ? 'Not updated lately: ' + late.map(b => b.name).join(', ') + '. ' : '') +
+      (others.some(b => b.priceOnly) ? 'Without dividends (price only): ' + others.filter(b => b.priceOnly).map(b => b.name).join(', ') + '. ' : '')));
+  } else if (PWA) {
+    parts.push(h('p', { class: 'fine' }, 'The other indexes and funds (Nasdaq-100, world stocks, bonds, gold, cash, inflation and more) haven’t arrived yet. They come with the daily data update on the site this app is served from, and the app picks them up the next time it opens online.'));
+  }
+  parts.push(h('p', { class: 'fine' }, 'Everything is in US dollars' + (cur() !== 'USD' ? '; your amounts are taken to be dollars too, so currency moves aren’t included' : '') + '. The app itself never contacts a price service.'));
   fill(body, ...parts);
 }
 
@@ -1402,7 +1659,128 @@ function renderYears(M) {
   fill($('#years-tfoot'), h('tr', { class: 'total' }, h('td', null, 'Total'), h('td', null, money(M.total, { dec: 0 })), h('td', null, String(M.count)), h('td', null, '')));
 }
 
-/* ---------- Performance: your investments against the S&P 500, with deposits taken out of the picture ---------- */
+/* ---------- how it's doing: one reading of the numbers, shared by Overview and Performance ---------- */
+const ordinal = n => { const s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
+/* Where you stand among the stock and bond funds over a period (k: 'all', '1y', ...), by return. */
+function rankIn(B, k) {
+  const mine = B.byId.get(B.main.id).periods.find(r => r.k === k);
+  if (!mine) return null;
+  const yearly = mine.youAnn != null && k !== '1y';
+  const list = [];
+  for (const row of B.rows) {
+    const r = row.periods.find(x => x.k === k), v = r ? (yearly ? r.spAnn : r.sp) : null;
+    if (v != null) list.push({ b: row.b, v, peer: isPeer(row.b) });
+  }
+  list.push({ you: true, v: yearly ? mine.youAnn : mine.you, peer: true });
+  list.sort((a, b) => b.v - a.v);
+  const peers = list.filter(x => x.peer);
+  return { pos: peers.findIndex(x => x.you) + 1, of: peers.length, list, peers, yearly, row: mine };
+}
+function computeHealth() {
+  const P = lastP, B = lastB;
+  if (!P || !B) return null;
+  const mainRow = B.byId.get(B.main.id);
+  const all = mainRow.periods.find(r => r.k === 'all'), year = mainRow.periods.find(r => r.k === '1y');
+  const months = perfMonths(P), years = perfYears(P), stats = perfStats(P, months);
+  const allOf = id => { const row = B.byId.get(id); const r = row && row.b.id !== B.main.id ? row.periods.find(x => x.k === 'all') : null; return r && r.sp != null ? r : null; };
+  let cash = null;
+  const cashRow = B.byId.get('CASH');
+  if (cashRow && cashRow.P) { cash = new Map(); for (const r of perfMonths(cashRow.P)) if (!r.mtd && r.sp != null) cash.set(r.y * 12 + r.m, r.sp); }
+  const risk = all && all.sp != null ? riskStats(months, cash) : null;
+  const rank = rankIn(B, 'all');
+  const ddBm = deepestDrop(P.pts, p => p.sp);
+  const checks = all && all.sp != null ? healthChecks({ all, year: year && year.sp != null ? year : null, rank: rank ? { pos: rank.pos, of: rank.of } : null,
+    cash: allOf('CASH'), prices: allOf('CPI'), risk, ddYou: stats.dd, ddBm, pts: P.pts.length, years }) : [];
+  const n = checks.length, k = checks.filter(c => c.pass).length, r = n ? k / n : 0;
+  const verdict = n < 3 ? null : { n, k, tone: r >= 0.6 ? 'good' : r >= 0.4 ? 'warn' : 'bad',
+    title: r >= 0.85 ? 'Doing very well' : r >= 0.6 ? 'Doing well' : r >= 0.4 ? 'A mixed picture' : 'Falling behind' };
+  return { checks, verdict, all, year, months, years, stats, risk, rank, ddBm };
+}
+function marketLine(H) {
+  const c = H.checks.find(x => x.id === 'market');
+  if (!c) return '';
+  const d = c.you - c.bm, since = dfMonthYear.format(new Date(c.t0 * DAY_MS));
+  if (Math.abs(d) < 0.0005) return 'Level with ' + theMain() + ' since ' + since + '.';
+  return (d > 0 ? 'Ahead of ' : 'Behind ') + theMain() + ' by ' + num(Math.abs(d) * 100, 1) + (c.yearly ? ' points a year' : ' points') + ' since ' + since + '.';
+}
+function checkText(c) {
+  const nm = theMain(), per = c.yearly ? ' a year' : '';
+  switch (c.id) {
+    case 'market': return { title: 'Beats ' + nm, detail: pct(c.you) + per + ' against ' + pct(c.bm) + ', since ' + fmtDay(c.t0) };
+    case 'recent': return { title: 'Beats it over the last 12 months', detail: pct(c.you) + ' against ' + pct(c.bm) };
+    case 'field': return { title: 'In the top half of the funds', detail: ordinal(c.you) + ' of ' + c.bm + ', counting you and the stock and bond funds here' };
+    case 'cash': return { title: 'Beats cash', detail: pct(c.you) + per + ' against ' + pct(c.bm) + ' in Treasury bills' };
+    case 'prices': return { title: 'Beats inflation', detail: pct(c.you) + per + ' against ' + pct(c.bm) + ' for US prices' };
+    case 'risk': return { title: 'Earns its risk', detail: num(c.you, 2) + ' of return for each point of swing, against ' + num(c.bm, 2) };
+    case 'drop': return { title: 'Falls no harder than ' + nm, detail: 'Deepest drop ' + (c.you ? pct(c.you) : 'none') + ' against ' + (c.bm ? pct(c.bm) : 'none') };
+    default: return { title: 'Ahead in most years', detail: 'Ahead in ' + c.you + ' of ' + c.bm + ' calendar years' };
+  }
+}
+/* A ring that fills to k of n, with the count in the middle. */
+function scoreRing(k, n, tn, play) {
+  const R = 30, C = 2 * Math.PI * R, frac = n ? k / n : 0;
+  const fillEl = sv('circle', { cx: 38, cy: 38, r: R, class: 'ring-fill ' + tn, 'stroke-dasharray': C.toFixed(1), 'stroke-dashoffset': (C * (1 - frac)).toFixed(1), transform: 'rotate(-90 38 38)' });
+  const num0 = sv('tspan', { class: 'ring-k' }, String(k)), svg = sv('svg', { viewBox: '0 0 76 76', width: 76, height: 76, role: 'img', 'aria-label': k + ' of ' + n + ' checks passed' },
+    sv('circle', { cx: 38, cy: 38, r: R, class: 'ring-track' }), fillEl,
+    sv('text', { x: 38, y: 39, 'text-anchor': 'middle', 'dominant-baseline': 'central', class: 'ring-text' }, num0, sv('tspan', { class: 'ring-n' }, '/' + n)));
+  if (play) {
+    anim(fillEl, [{ strokeDashoffset: C }, { strokeDashoffset: C * (1 - frac) }], { duration: 900, delay: 150 });
+    countUp(num0, k, v => String(Math.round(v)), 800);
+  }
+  return svg;
+}
+const ICON_CHECK = '<svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 10.5l3.5 3.5 7.5-8"/></svg>';
+const ICON_CROSS = '<svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/></svg>';
+function markOf(pass) { const m = h('span', { class: 'mark ' + (pass ? 'yes' : 'no'), 'aria-hidden': 'true' }); m.innerHTML = pass ? ICON_CHECK : ICON_CROSS; return m; }
+/* rows of a leaderboard: a place, a name, a bar and a figure; yours stands out */
+function boardRow(x, i, o) {
+  const li = h('li', { class: 'board-row' + (x.you ? ' you' : '') + (x.peer === false ? ' aside' : ''), style: { '--i': String(i) } },
+    h('span', { class: 'board-pos' }, x.pos != null ? String(x.pos) : ''),
+    h('span', { class: 'board-name' }, x.you ? 'You' : (x.b.short && o.short ? x.b.short : x.b.name), x.dot ? h('i', { class: 'dot-key key-' + x.dot }) : null),
+    h('span', { class: 'board-val' }, o.fmt(x.v)),
+    h('span', { class: 'board-track', 'aria-hidden': 'true' }, h('i', { class: 'board-bar' + (x.v < 0 ? ' neg' : ''), style: { '--l': (o.left(x.v) * 100).toFixed(2) + '%', '--w': (o.width(x.v) * 100).toFixed(2) + '%' } })),
+    x.note ? h('span', { class: 'board-note ' + (x.noteTone || '') }, x.note) : null);
+  return li;
+}
+function boardScale(vals) {
+  const lo = Math.min(0, ...vals), hi = Math.max(0, ...vals), span = hi - lo || 1;
+  return { left: v => (Math.min(v, 0) - lo) / span, width: v => Math.max(0.012, Math.abs(v) / span) };
+}
+
+/* Overview: the verdict in one card, with the three places around yours. */
+function renderVerdict(M) {
+  const sec = $('#verdict-sec'), box = $('#verdict'), B = lastB;
+  const H = computeHealth(), play = plays('health');
+  if (!B || !M.hasValue || !M.count) { sec.hidden = true; return; }
+  const more = h('button', { type: 'button', class: 'btn btn-block', 'data-action': 'go-performance' }, 'Open the full comparison');
+  if (!H || !H.verdict) {
+    /* not enough saved values for the full check: say where the same deposits would stand instead */
+    const sp = M.sp;
+    if (sp.diff == null) { sec.hidden = true; return; }
+    sec.hidden = false;
+    const ahead = sp.diff >= 0;
+    fill(box, h('div', { class: 'verdict-top' }, markOf(ahead),
+      h('div', null, h('h3', { class: 'verdict-title' }, (ahead ? 'Ahead of ' : 'Behind ') + theMain()),
+        h('p', { class: 'verdict-line' }, 'The same deposits in ' + theMain() + ' would be worth ' + money(sp.value, { dec: 0 }) + ': ' + money(Math.abs(sp.diff), { dec: 0 }) + (ahead ? ' less' : ' more') + ' than you have.'))),
+      h('p', { class: 'note' }, 'Save your value on a few more dates and a fuller check appears here: returns, risk and how you rank.'), more);
+    return;
+  }
+  sec.hidden = false;
+  const v = H.verdict, rk = H.rank;
+  const parts = [h('div', { class: 'verdict-top' }, h('div', { class: 'score ' + v.tone }, scoreRing(v.k, v.n, v.tone, play)),
+    h('div', null, h('h3', { class: 'verdict-title' }, v.title), h('p', { class: 'verdict-line' }, marketLine(H) + ' ' + v.k + ' of ' + v.n + ' checks passed.')))];
+  if (rk && rk.peers.length >= 2) {
+    const i = rk.pos - 1, a = Math.max(0, Math.min(rk.peers.length - 3, i - 1));
+    const near = rk.peers.slice(a, a + 3), sc = boardScale(near.map(x => x.v));
+    parts.push(h('ol', { class: 'board mini' + (play ? ' play' : '') }, ...near.map((x, j) => boardRow(Object.assign({ pos: a + j + 1, dot: x.b && slotOf(x.b.id) >= 0 ? slotCls(x.b.id) : null }, x), j,
+      { fmt: val => pct(val) + (rk.yearly ? ' a year' : ''), left: sc.left, width: sc.width, short: true }))));
+    parts.push(h('p', { class: 'fine' }, 'Return ' + (rk.yearly ? 'a year ' : '') + 'since ' + fmtDay(rk.row.t0) + ', with deposits taken out of the picture. ' + ordinal(rk.pos) + ' of ' + rk.of + ' counting you and the stock and bond funds.'));
+  }
+  parts.push(more);
+  fill(box, ...parts);
+}
+
+/* ---------- Performance ---------- */
 const PERF_PRESETS = [
   { k: 'ytd', label: 'YTD', name: 'This year so far' },
   { k: '1y', label: '1Y', name: 'Past year' },
@@ -1412,21 +1790,31 @@ const PERF_PRESETS = [
   { k: 'all', label: 'All', name: 'Since your first saved value' }
 ];
 const diffCell = (you, sp) => (you == null || sp == null ? h('td', null, '—') : h('td', { class: tone(you - sp) }, ptsDiff(you - sp)));
-const pctCell = v => h('td', null, v == null ? '—' : pct(v));
+const pctCell = (v, cls) => h('td', cls ? { class: cls } : null, v == null ? '—' : pct(v));
+/* the picks with data over your saved values, in their places: [{ b, cls, row }] */
+function pickRows() {
+  const B = lastB;
+  return cmpSlots().filter(Boolean).map(b => ({ b, cls: slotCls(b.id), row: B.byId.get(b.id) })).filter(x => x.row);
+}
 
 function renderPerformance(M) {
-  const empty = $('#perf-empty'), body = $('#perf-body'), P = lastP;
+  const empty = $('#perf-empty'), body = $('#perf-body'), top = $('#perf-top'), P = lastP;
   $('#benchmark').hidden = mode === 'welcome';
+  $('#cmp-bar').hidden = mode === 'welcome';
   if (mode === 'welcome') {
-    empty.hidden = false; body.hidden = true;
+    empty.hidden = false; body.hidden = true; top.hidden = true;
     $('#perf-sub').textContent = '';
     fill(empty, h('h3', null, 'No file open'), h('p', null, 'Open your Excel file to see how your investments have performed.'),
       h('div', { class: 'btn-row' }, h('button', { class: 'btn btn-primary', type: 'button', 'data-action': 'open-file' }, 'Open Excel file')));
     return;
   }
+  renderCmpBar();
   renderBenchmark(M);
+  top.hidden = !M.count;
+  renderBoard(M);
   if (!P) {
     empty.hidden = false; body.hidden = true;
+    $('#health').hidden = true;
     $('#perf-sub').textContent = '';
     fill(empty,
       h('h3', null, 'Performance needs your value on more than one date'),
@@ -1436,50 +1824,169 @@ function renderPerformance(M) {
     return;
   }
   empty.hidden = true; body.hidden = false;
-  const periods = perfPeriods(P), years = perfYears(P), months = perfMonths(P), stats = perfStats(P, months);
+  const H = computeHealth();
   $('#perf-sub').textContent = 'How your investments did, whatever you paid in and when. Measured between your ' + P.pts.length + ' saved values since ' + fmtDay(P.t0) + '.';
-  renderPerfChart(P, periods);
-  renderPerfTable(P, periods);
-  renderPerfYears(years);
-  renderPerfStats(stats);
-  renderPerfMonths(months);
+  renderHealth(H);
+  const picks = pickRows(), periods = lastB.byId.get(lastB.main.id).periods;
+  renderPerfChart(P, periods, picks);
+  renderPerfTable(periods, picks);
+  renderPerfRisk(H);
+  renderPerfYears(H.years, picks);
+  renderPerfStats(H.stats);
+  renderPerfMonths(H.months);
 }
 
-function renderPerfChart(P, periods) {
+/* What you're comparing with, as chips; tapping opens the list to choose from. */
+function renderCmpBar() {
+  const main = mainBench(), waiting = !BENCH_DATA.series.length;
+  fill($('#cmp-bar'), h('span', { class: 'cmp-label' }, 'Against'),
+    ...cmpSlots().filter(Boolean).map(b => h('button', { type: 'button', class: 'cmp-chip', 'data-action': 'open-picker', 'aria-label': 'Compared with ' + b.name + (b.id === main.id ? ', the main one' : '') + '. Change' },
+      h('i', { class: 'dot-key key-' + slotCls(b.id) }), b.short || b.name, b.id === main.id && cmpSlots().filter(Boolean).length > 1 ? h('span', { class: 'star', 'aria-hidden': 'true' }, '★') : null)),
+    h('button', { type: 'button', class: 'cmp-chip add', 'data-action': 'open-picker' }, waiting ? (PWA ? 'More on the way' : 'More in the installed app') : 'Change'));
+}
+
+function renderHealth(H) {
+  const sec = $('#health'), play = plays('health');
+  if (!H.verdict) {
+    sec.hidden = !H.checks.length;
+    if (!H.checks.length) return;
+  }
+  sec.hidden = false;
+  const v = H.verdict;
+  fill($('#health-top'), v ? h('div', { class: 'score ' + v.tone }, scoreRing(v.k, v.n, v.tone, play)) : null,
+    h('div', null, h('h4', { class: 'verdict-title' }, v ? v.title : 'A first reading'),
+      h('p', { class: 'verdict-line' }, marketLine(H) + (v ? ' ' + v.k + ' of ' + v.n + ' checks passed.' : ' More checks appear as your saved values build up.'))));
+  const list = $('#health-list');
+  list.classList.toggle('play', play);
+  fill(list, ...H.checks.map((c, i) => { const t = checkText(c); return h('li', { class: c.pass ? 'yes' : 'no', style: { '--i': String(i) } }, markOf(c.pass), h('div', null, h('p', { class: 'check-title' }, t.title, h('span', { class: 'sr-only' }, c.pass ? ': yes. ' : ': no. ')), h('p', { class: 'check-detail' }, t.detail))); }));
+  $('#health-fine').textContent = 'A reading of your saved values against public indexes and funds, with ' + theMain() + ' as the main yardstick. It describes the past and isn’t advice.';
+}
+
+/* Everything on one ladder: by what the same deposits would be worth, or by return over a period. */
+function renderBoard(M) {
+  const B = lastB, P = lastP, list = $('#board-list'), play = plays('board') || plays('health');
+  if (!P) board.mode = 'money';
+  $$('#board-seg button').forEach(b => { b.setAttribute('aria-checked', String(b.dataset.k === board.mode)); b.disabled = b.dataset.k === 'rate' && !P; });
+  slideThumb($('#board-seg'));
+  const pres = $('#board-presets'), lede = $('#board-lede'), fine = $('#board-fine');
+  let rows = [], fmt, note = '';
+  if (board.mode === 'money') {
+    pres.hidden = true; fill(pres);
+    for (const r of B.rows) if (r.what.value != null) rows.push({ b: r.b, v: r.what.value, peer: isPeer(r.b) });
+    if (M.hasValue) rows.push({ you: true, v: M.V, peer: true });
+    fmt = v => money(v, { dec: 0 });
+    for (const x of rows) if (!x.you && M.hasValue) { const d = M.V - x.v; x.note = (d >= 0 ? 'You’re ahead by ' : 'You’re behind by ') + money(Math.abs(d), { dec: 0 }); x.noteTone = d >= 0 ? 'good' : 'bad'; }
+    fill(lede, 'What your deposits would be worth ' + (M.hasValue ? 'on ' + fmtDay(M.vDay) : 'today') + ' if each one had gone into these instead, on the same day.');
+    note = 'Counts every deposit from its own date, so it answers “would I have more money?”. Dividends are reinvested. ';
+  } else {
+    const mine = B.byId.get(B.main.id).periods;
+    if (!mine.some(r => r.k === board.period)) board.period = 'all';
+    pres.hidden = false;
+    fill(pres, ...PERF_PRESETS.filter(p => mine.some(r => r.k === p.k)).map(p => h('button', { type: 'button', 'data-action': 'board-period', 'data-k': p.k, 'aria-label': p.name, 'aria-pressed': String(board.period === p.k) }, p.label)));
+    slideThumb(pres);
+    const rk = rankIn(B, board.period);
+    rows = rk.list.slice();
+    fmt = v => pct(v) + (rk.yearly ? ' a year' : '');
+    const you = rows.find(x => x.you);
+    for (const x of rows) if (!x.you) { const d = you.v - x.v; x.note = Math.abs(d) < 0.0005 ? 'Level with you' : (d > 0 ? 'You’re ahead by ' : 'You’re behind by ') + num(Math.abs(d) * 100, 1) + ' pts'; x.noteTone = d >= 0 ? 'good' : 'bad'; }
+    fill(lede, 'Return ' + (rk.yearly ? 'a year ' : '') + 'from ' + fmtDay(rk.row.t0) + ' to ' + fmtDay(rk.row.t1) + ', measured between your saved values so deposits don’t count as performance.');
+    note = 'A like-for-like test of the investments themselves. ';
+  }
+  rows.sort((a, b) => b.v - a.v);
+  let pos = 0;
+  for (const x of rows) x.pos = x.peer ? ++pos : null;
+  for (const x of rows) if (x.b && slotOf(x.b.id) >= 0 && cmpSlots()[slotOf(x.b.id)]) x.dot = slotCls(x.b.id);
+  const you = rows.find(x => x.you), peers = rows.filter(x => x.peer);
+  if (you && peers.length > 1) you.note = ordinal(you.pos) + ' of ' + peers.length + (board.mode === 'money' ? ' by value' : ' by return');
+  const sc = boardScale(rows.map(x => x.v));
+  list.classList.toggle('play', play);
+  /* the field first, in order; then the yardsticks that aren't given a place */
+  const o = { fmt, left: sc.left, width: sc.width }, ranked = rows.filter(x => x.peer !== false), aside = rows.filter(x => x.peer === false);
+  fill(list, ...ranked.map((x, i) => boardRow(x, i, o)),
+    aside.length ? h('li', { class: 'board-sep', style: { '--i': String(ranked.length) } }, 'For scale') : null,
+    ...aside.map((x, i) => boardRow(x, ranked.length + 1 + i, o)));
+  const waiting = !BENCH_DATA.series.length;
+  fill(fine, note + (rows.some(x => x.peer === false) ? 'Cash, inflation, gold and bitcoin are shown for scale and aren’t given a place. ' : ''),
+    waiting ? 'Only the S&P 500 is here so far: more indexes and funds arrive with the app’s next daily data update.' : null);
+}
+
+function renderPerfChart(P, periods, picks) {
   if (!periods.some(r => r.k === perf.preset)) perf.preset = 'all';
   const row = periods.find(r => r.k === perf.preset);
-  fill($('#perf-presets'), ...PERF_PRESETS.filter(p => periods.some(r => r.k === p.k)).map(p =>
+  const pres = $('#perf-presets');
+  fill(pres, ...PERF_PRESETS.filter(p => periods.some(r => r.k === p.k)).map(p =>
     h('button', { type: 'button', 'data-action': 'perf-preset', 'data-k': p.k, 'aria-label': p.name, 'aria-pressed': String(perf.preset === p.k) }, p.label)));
-  const box = $('#perf-chart'), base = P.pts[row.i], hasSp = base.sp != null;
-  const drawn = thinValues(P.pts.slice(row.i), Math.max(24, Math.floor((box.clientWidth || 600) / 6)));
+  slideThumb(pres);
+  const box = $('#perf-chart'), i0 = row.i;
+  const drawn = thinValues(P.pts.slice(i0), Math.max(24, Math.floor((box.clientWidth || 600) / 6)));
+  const base = P.pts[i0];
   const you = drawn.map(p => [p.t, p.idx / base.idx - 1]);
-  const sp = hasSp ? drawn.map(p => [p.t, p.sp / base.sp - 1]) : [];
-  fill($('#perf-legend'), legendItem('value', 'You', pct(row.you)), hasSp ? legendItem('sp', 'S&P 500', pct(row.sp)) : null);
+  /* each pick's index at the same saved values; one that starts later begins where its data does */
+  const lines = picks.map(x => {
+    const at = new Map(x.row.P.pts.map(p => [p.t, p.sp])), b0 = at.get(base.t);
+    const first = drawn.find(p => at.get(p.t) != null);
+    const ref = b0 != null ? { t: base.t, v: b0, lift: 0 } : first ? { t: first.t, v: at.get(first.t), lift: first.idx / base.idx - 1 } : null;
+    const pts = ref ? drawn.filter(p => p.t >= ref.t && at.get(p.t) != null).map(p => [p.t, (1 + ref.lift) * (at.get(p.t) / ref.v) - 1]) : [];
+    const per = x.row.periods.find(r => r.k === perf.preset);
+    return { b: x.b, cls: x.cls, pts, by: new Map(pts), total: b0 != null && per ? per.sp : null };
+  }).filter(l => l.pts.length > 1);
+  fill($('#perf-legend'), legendItem('value', 'You', pct(row.you)), ...lines.map(l => legendItem(l.cls, l.b.short || l.b.name, l.total != null ? pct(l.total) : null)));
   lineChart(box, {
-    height: isWide() ? 280 : 220, x0: base.t, x1: P.t1, xTicks: timeTicks(base.t, P.t1, box.clientWidth || 600),
-    series: (hasSp ? [{ cls: 'sp', type: 'line', thin: true, end: true, pts: sp }] : []).concat([{ cls: 'value', type: 'line', end: true, dots: you.length <= 14, pts: you }]),
+    height: isWide() ? 290 : 226, x0: base.t, x1: P.t1, xTicks: timeTicks(base.t, P.t1, box.clientWidth || 600), animate: plays('perf'),
+    series: lines.map(l => ({ cls: l.cls, type: 'line', thin: true, end: true, pts: l.pts })).concat([{ cls: 'value', type: 'line', end: true, dots: you.length <= 14, pts: you }]),
     yFmt: v => pct(v, { dec: 0 }), samples: drawn.map(p => p.t),
-    readout: i => ({ title: fmtDay(drawn[i].t), rows: [{ cls: 'value', value: pct(you[i][1]), label: 'You' }].concat(hasSp ? [{ cls: 'sp', value: pct(sp[i][1]), label: 'S&P 500' }] : []) }),
-    focus: i => [{ cls: 'value', x: you[i][0], y: you[i][1] }].concat(hasSp ? [{ cls: 'sp', x: sp[i][0], y: sp[i][1] }] : []),
-    label: 'Line chart: your return and the S&P 500’s since ' + fmtDay(base.t)
+    readout: i => ({ title: fmtDay(drawn[i].t), rows: [{ cls: 'value', value: pct(you[i][1]), label: 'You' }].concat(lines.filter(l => l.by.has(drawn[i].t)).map(l => ({ cls: l.cls, value: pct(l.by.get(drawn[i].t)), label: l.b.short || l.b.name }))) }),
+    focus: i => [{ cls: 'value', x: you[i][0], y: you[i][1] }].concat(lines.filter(l => l.by.has(drawn[i].t)).map(l => ({ cls: l.cls, x: drawn[i].t, y: l.by.get(drawn[i].t) }))),
+    label: 'Line chart: your return since ' + fmtDay(base.t) + (lines.length ? ' against ' + lines.map(l => l.b.name).join(', ') : '')
   });
-  $('#perf-fine').textContent = 'Total return since ' + fmtDay(base.t) + '. The S&P 500 includes reinvested dividends. Between your saved values the lines run straight, because what happened in between isn’t known.';
+  $('#perf-fine').textContent = 'Total return since ' + fmtDay(base.t) + ', dividends reinvested. Between your saved values the lines run straight, because what happened in between isn’t known.' +
+    (lines.some(l => l.total == null) ? ' A line that starts later begins level with you on the day its data starts.' : '') +
+    (picks.length ? ' In the tables, a filled dot marks where you came out ahead and a ring where you were behind.' : '');
 }
 
-function renderPerfTable(P, periods) {
+/* Periods down the side, you and each pick across. With one pick there is room for the gap as well. */
+function matrixHead(el, first, picks) {
+  const one = picks.length === 1;
+  fill(el, h('tr', null, h('th', { scope: 'col' }, first), h('th', { scope: 'col' }, h('i', { class: 'dot-key key-value' }), 'You'),
+    ...picks.map(x => h('th', { scope: 'col', class: 'vs' }, h('i', { class: 'dot-key key-' + x.cls }), x.b.short || x.b.name)), one ? h('th', { scope: 'col' }, 'Difference') : null));
+}
+function renderPerfTable(periods, picks) {
+  const tight = picks.length > 1 && !isWide();
   const label = r => {
-    if (r.k === 'ytd') return dayYear(r.t1) + ' so far';
+    if (r.k === 'ytd') return tight ? 'This year' : dayYear(r.t1) + ' so far';
     if (r.k === 'all') return 'All time';
-    return r.n === 1 ? 'Past year' : 'Past ' + r.n + ' years';
+    return tight ? (r.n === 1 ? '1 year' : r.n + ' years') : r.n === 1 ? 'Past year' : 'Past ' + r.n + ' years';
   };
-  const rows = [];
+  const show = v => (tight && Math.abs(v) >= 0.9995 ? pct(v, { dec: 0 }) : pct(v));
+  matrixHead($('#perf-thead'), 'Period', picks);
+  const one = picks.length === 1, rows = [];
+  const line = (r, yearly, sub) => {
+    const youV = yearly ? r.youAnn : r.you;
+    const cells = picks.map(x => { const pr = x.row.periods.find(q => q.k === r.k), v = pr ? (yearly ? pr.spAnn : pr.sp) : null; return { v, td: h('td', { class: v == null ? null : 'vs ' + (youV >= v ? 'won' : 'lost') }, v == null ? '—' : show(v)) }; });
+    rows.push(h('tr', null, h('td', null, label(r), sub ? h('small', { class: 'sub' }, sub) : null), h('td', { class: 'me' }, youV == null ? '—' : show(youV)), ...cells.map(c => c.td), one ? diffCell(youV, cells[0].v) : null));
+  };
   for (const r of periods) {
     const yearly = r.days >= 365 && r.k !== '1y';
-    rows.push(h('tr', null, h('td', null, label(r), yearly ? h('small', { class: 'sub' }, 'a year') : null),
-      pctCell(yearly ? r.youAnn : r.you), pctCell(yearly ? r.spAnn : r.sp), diffCell(yearly ? r.youAnn : r.you, yearly ? r.spAnn : r.sp)));
-    if (r.k === 'all' && yearly) rows.push(h('tr', null, h('td', null, label(r), h('small', { class: 'sub' }, 'in total')), pctCell(r.you), pctCell(r.sp), diffCell(r.you, r.sp)));
+    line(r, yearly, yearly ? 'a year' : null);
+    if (r.k === 'all' && yearly) line(r, false, 'in total');
   }
   fill($('#perf-tbody'), ...rows);
+}
+
+function renderPerfRisk(H) {
+  const sec = $('#perf-risk'), k = H.risk;
+  sec.hidden = !k;
+  if (!k) return;
+  const nm = mainName(), tiles = [
+    { label: 'Swings', value: [pct(k.volYou, { sign: false }), h('small', null, ' a year')], cap: nm + ': ' + pct(k.volBm, { sign: false }) + '. How far monthly returns spread out' },
+    { label: 'Return for the risk', value: num(k.ratioYou, 2), tone: k.ratioYou >= k.ratioBm ? 'good' : 'bad', cap: nm + ': ' + num(k.ratioBm, 2) + '. Yearly return' + (k.annCash != null ? ' above cash' : '') + ' for each point of swing' }
+  ];
+  if (k.beta != null) tiles.push({ label: 'Moves with ' + nm, value: [num(k.beta, 2), h('small', null, '×')], cap: 'When it moves 1%, you tend to move ' + num(k.beta, 2) + '%. In step ' + pct(Math.max(0, k.corr), { sign: false, dec: 0 }) + ' of the way' });
+  if (k.up != null && k.down != null) tiles.push({ label: 'Its good and bad months', value: [pct(k.up, { sign: false, dec: 0 }), h('small', null, ' up, '), pct(k.down, { sign: false, dec: 0 }), h('small', null, ' down')],
+    tone: k.up >= k.down ? 'good' : '', cap: 'Your average month as a share of its average, in its ' + k.nUp + ' rising and ' + k.nDown + ' falling months' });
+  fill($('#perf-risk-tiles'), ...kpiTiles(tiles));
+  fitTiles($('#perf-risk-tiles'));
+  $('#perf-risk-fine').textContent = 'From the ' + k.n + ' full months you have a value at each end of.';
 }
 
 /* Two bars side by side for each group: yours and the index's. */
@@ -1502,9 +2009,9 @@ function pairBars(box, o) {
   const els = [];
   o.groups.forEach((g, i) => {
     const cx = ml + band * (i + 0.5), grp = sv('g', { class: 'pair' + (g.faded ? ' faded' : '') });
-    const bar = (v, x, cls) => { if (v != null && Math.abs(Y(v) - y0) >= 0.5) grp.append(sv('path', { d: roundedBar(x, bw, y0, Y(v), 3), class: 'bar f-' + cls })); };
+    const bar = (v, x, cls) => { if (v != null && Math.abs(Y(v) - y0) >= 0.5) grp.append(sv('path', { d: roundedBar(x, bw, y0, Y(v), 3), class: 'bar f-' + cls + (v < 0 ? ' neg' : '') })); };
     bar(g.a, cx - gap / 2 - bw, 'value');
-    bar(g.b, cx + gap / 2, 'sp');
+    bar(g.b, cx + gap / 2, o.clsB || 's0');
     svg.append(grp); els.push(grp);
     if ((n - 1 - i) % every === 0) svg.append(sv('text', { x: cx, y: H - 8, 'text-anchor': 'middle' }, useShort ? g.short : g.label));
   });
@@ -1531,6 +2038,7 @@ function pairBars(box, o) {
     svg.append(r);
   });
   box.append(svg, tip);
+  if (o.animate) growBars(svg);
   box.tabIndex = 0;
   box.setAttribute('aria-label', o.label + '. Use the left and right arrow keys to read values.');
   box.onkeydown = e => {
@@ -1540,37 +2048,42 @@ function pairBars(box, o) {
   box.onblur = hide;
 }
 
-function renderPerfYears(years) {
+function renderPerfYears(years, picks) {
   const sec = $('#perf-years'), shown = years.filter(r => !r.missing);
   sec.hidden = !shown.length;
   if (!shown.length) return;
+  const main = mainBench(), mcls = slotCls(main.id), mname = main.short || main.name;
   const name = r => r.year + (r.ytd ? ' so far' : r.partial ? ' from ' + dfShort.format(new Date(r.t0 * DAY_MS)) : '');
-  fill($('#perf-years-legend'), legendItem('value', 'You'), legendItem('sp', 'S&P 500'));
+  fill($('#perf-years-legend'), legendItem('value', 'You'), legendItem(mcls, mname));
   pairBars($('#perf-years-chart'), {
-    height: isWide() ? 240 : 200, yFmt: v => pct(v, { dec: 0 }),
+    height: isWide() ? 240 : 200, yFmt: v => pct(v, { dec: 0 }), clsB: mcls, animate: plays('perf'),
     groups: shown.map(r => ({
       label: String(r.year), short: '’' + String(r.year).slice(2), a: r.you, b: r.sp, faded: r.ytd || r.partial, title: name(r),
-      rows: [{ cls: 'value', value: pct(r.you), label: 'You' }].concat(r.sp != null ? [{ cls: 'sp', value: pct(r.sp), label: 'S&P 500' }] : [])
+      rows: [{ cls: 'value', value: pct(r.you), label: 'You' }].concat(r.sp != null ? [{ cls: mcls, value: pct(r.sp), label: mname }] : [])
     })),
-    label: 'Bar chart: your return and the S&P 500’s for each calendar year'
+    label: 'Bar chart: your return and ' + main.name + '’s for each calendar year'
   });
+  matrixHead($('#perf-years-thead'), 'Year', picks);
+  const one = picks.length === 1;
+  const others = picks.map(x => new Map(perfYears(x.row.P).filter(r => !r.missing).map(r => [r.year, r.sp])));
   fill($('#perf-years-tbody'), ...years.slice().reverse().map(r => r.missing
-    ? h('tr', null, h('td', null, String(r.year)), h('td', { colspan: '3', class: 'gap' }, 'No saved value near a year end'))
+    ? h('tr', null, h('td', null, String(r.year)), h('td', { colspan: String(1 + picks.length + (one ? 1 : 0)), class: 'gap' }, 'No saved value near a year end'))
     : h('tr', { class: r.ytd ? 'current' : null }, h('td', null, r.ytd ? r.year + ' so far' : String(r.year), r.partial && !r.ytd ? h('small', { class: 'sub' }, 'from ' + dfShort.format(new Date(r.t0 * DAY_MS))) : null),
-      pctCell(r.you), pctCell(r.sp), diffCell(r.you, r.sp))));
+      h('td', { class: 'me' }, pct(r.you)), ...others.map(m => { const v = m.get(r.year); return h('td', { class: v == null ? null : 'vs ' + (r.you >= v ? 'won' : 'lost') }, v == null ? '—' : pct(v)); }),
+      one ? diffCell(r.you, others[0].get(r.year)) : null)));
 }
 
 function renderPerfStats(st) {
   const tiles = [];
   const mo = r => fmtMonth(r.y, r.m);
   if (st.n >= 3) {
-    tiles.push({ label: 'Best month', value: pct(st.best.you), tone: tone(st.best.you), cap: mo(st.best) + (st.best.sp != null ? '; the S&P 500 did ' + pct(st.best.sp) : '') });
-    tiles.push({ label: 'Worst month', value: pct(st.worst.you), tone: tone(st.worst.you), cap: mo(st.worst) + (st.worst.sp != null ? '; the S&P 500 did ' + pct(st.worst.sp) : '') });
+    tiles.push({ label: 'Best month', value: pct(st.best.you), tone: tone(st.best.you), cap: mo(st.best) + (st.best.sp != null ? '; ' + theMain() + ' did ' + pct(st.best.sp) : '') });
+    tiles.push({ label: 'Worst month', value: pct(st.worst.you), tone: tone(st.worst.you), cap: mo(st.worst) + (st.worst.sp != null ? '; ' + theMain() + ' did ' + pct(st.worst.sp) : '') });
   }
   tiles.push(st.dd
     ? { label: 'Biggest drop', value: pct(st.dd.depth), tone: 'bad', cap: fmtDay(st.dd.peakT) + ' to ' + fmtDay(st.dd.troughT) + (st.dd.recT ? ', made back by ' + fmtDay(st.dd.recT) : ', not made back yet') }
     : { label: 'Biggest drop', value: 'None', cap: 'No fall between your saved values so far' });
-  if (st.n >= 3) tiles.push({ label: 'Months that went up', value: st.up + ' of ' + st.n, cap: st.cmp ? 'Ahead of the S&P 500 in ' + st.ahead + ' of ' + st.cmp : 'Full months with a value at each end' });
+  if (st.n >= 3) tiles.push({ label: 'Months that went up', value: st.up + ' of ' + st.n, cap: st.cmp ? 'Ahead of ' + theMain() + ' in ' + st.ahead + ' of ' + st.cmp : 'Full months with a value at each end' });
   else tiles.push(st.high.atHigh
     ? { label: 'Against its high', value: 'At the high', tone: 'good', cap: 'Your latest value is the best so far' }
     : { label: 'Against its high', value: pct(st.high.below), tone: 'bad', cap: 'Below the high of ' + fmtDay(st.high.t) });
@@ -1592,7 +2105,7 @@ function renderPerfMonths(months) {
   const y1 = months[months.length - 1].y, y0 = months[0].y;
   const wide = (box.parentElement.clientWidth || 320) >= 520;
   const say = r => {
-    fill(read, B(fmtMonth(r.y, r.m) + (r.mtd ? ' so far' : '')), ': you ' + pct(r.you) + (r.sp != null ? ', S&P 500 ' + pct(r.sp) : '') + '.');
+    fill(read, B(fmtMonth(r.y, r.m) + (r.mtd ? ' so far' : '')), ': you ' + pct(r.you) + (r.sp != null ? ', ' + mainName() + ' ' + pct(r.sp) : '') + '.');
   };
   const head = h('div', { class: 'heat-row heat-head', 'aria-hidden': 'true' }, h('span'));
   for (let m = 1; m <= 12; m++) head.append(h('span', null, dfMonthNarrow.format(new Date(Date.UTC(2001, m - 1, 15)))));
@@ -1605,7 +2118,7 @@ function renderPerfMonths(months) {
       const p = r.you * 100, strength = Math.min(1, Math.abs(p) / 8);
       const txt = (wide && Math.abs(p) < 9.95 ? num(Math.abs(p), 1) : String(Math.round(Math.abs(p))));
       const cell = h('button', { type: 'button', class: 'heat-cell ' + (p >= 0 ? 'up' : 'dn') + (r.mtd ? ' mtd' : ''),
-        'aria-label': fmtMonth(r.y, r.m) + (r.mtd ? ' so far' : '') + ': ' + pct(r.you), style: { '--a': (0.1 + 0.5 * strength).toFixed(3) } },
+        'aria-label': fmtMonth(r.y, r.m) + (r.mtd ? ' so far' : '') + ': ' + pct(r.you), style: { '--a': (0.1 + 0.5 * strength).toFixed(3), '--i': String((y1 - y) * 2 + m) } },
         (p < 0 && Math.round(Math.abs(p) * (wide ? 10 : 1)) !== 0 ? MINUS : '') + txt);
       cell.addEventListener('click', () => say(r));
       cell.addEventListener('pointerenter', e => { if (e.pointerType === 'mouse') say(r); });
@@ -1614,9 +2127,10 @@ function renderPerfMonths(months) {
     }
     rows.push(row);
   }
+  box.classList.toggle('play', plays('perf'));
   fill(box, ...rows);
   say(months[months.length - 1]);
-  fine.textContent = 'Each cell is your return for that month, in percent. Tap one to compare it with the S&P 500. A month needs a saved value near both of its ends.';
+  fine.textContent = 'Each cell is your return for that month, in percent. Tap one to compare it with ' + theMain() + '. A month needs a saved value near both of its ends.';
 }
 
 /* ---------- Plan: a goal, and a look ahead ---------- */
@@ -1839,8 +2353,9 @@ function renderSettings() {
   $('#set-file').textContent = mode === 'welcome' ? 'No file open.' : mode === 'example' ? 'Showing example numbers.' : (file.appFormat && file.name ? file.name : 'A new tracker, not saved to a file yet') + (file.dirty ? ', with unsaved changes' : '');
   $('#set-close').hidden = mode === 'welcome';
   $('#set-save').disabled = mode !== 'data';
-  fill($('#set-spx'), 'S&P 500 total return (dividends reinvested) from 1985 to the close of ' + fmtDate(SPX.last.d) + ' at ' + num(SPX.last.px, 2) + '. ' +
-    (PWA ? 'A daily job on the site this app is served from adds each new close, and the app picks it up whenever it opens online. Your phone never contacts a price service itself. '
+  const nOther = benchList().filter(b => b.avail && b.id !== 'SPX' && b.id !== 'MIX').length;
+  fill($('#set-spx'), 'S&P 500 total return (dividends reinvested) from 1985 to the close of ' + fmtDate(SPX.last.d) + ' at ' + num(SPX.last.px, 2) + (nOther ? ', and ' + nOther + ' more indexes and funds' : '') + '. ' +
+    (PWA ? 'A daily job on the site this app is served from adds new prices, and the app picks them up whenever it opens online. Your phone never contacts a price service itself. '
          : 'For later dates, use “Add a newer close” on the Performance tab. '),
     spxCanCheck() ? h('button', { type: 'button', class: 'link', 'data-action': 'check-spx' }, spxBusy ? 'Checking…' : 'Check for new prices') : null);
   const ver = document.querySelector('meta[name="app-version"]'), verEl = document.getElementById('set-version');
@@ -1880,7 +2395,7 @@ async function openFile(f) {
     state.deposits = r.deposits.map(d => ({ id: newId(), d: d.d, a: d.a }));
     state.history = r.history;
     state.value = r.value;
-    state.settings = r.settings;
+    state.settings = normalize({ settings: r.settings }).settings;
     state.updatedAt = Date.now();
     mode = 'data';
     Object.assign(file, { name: got.name, appFormat: true, dirty: false, savedAt: null, openedAt: Date.now(), source: got.name });
@@ -1902,6 +2417,7 @@ function buildWorkbook(st, M, template) {
   hist.sort((a, b) => (a.d < b.d ? -1 : 1));
   const today = todayIso();
   const S = (v, style) => ({ v, style });
+  const spx = sameDeposits(M, benchById('SPX').A);
   const F = (f, v, style) => ({ f, v, style });
   const first = deps.length ? excelSerial(deps[0].d) : null;
   const vDate = M.hasValue ? excelSerial(st.value.d) : null;
@@ -1927,8 +2443,8 @@ function buildWorkbook(st, M, template) {
     [],
     [S(template ? 'Filled in by the app when you save' : 'From the app when you saved on ' + fmtDate(today), 'header')],
     [S('Annualized return (XIRR)'), M.xirr != null ? S(M.xirr, 'percent') : ''],
-    [S('S&P 500, same deposits'), M.sp.value != null ? S(round2(M.sp.value), 'money') : ''],
-    [S('Difference vs S&P 500'), M.sp.diff != null ? S(round2(M.sp.diff), 'money') : ''],
+    [S('S&P 500, same deposits'), spx.value != null ? S(round2(spx.value), 'money') : ''],
+    [S('Difference vs S&P 500'), spx.diff != null ? S(round2(spx.diff), 'money') : ''],
     [],
     [S('Year', 'header'), S('Deposited', 'header'), S('Cumulative', 'header')]
   ];
@@ -1949,6 +2465,8 @@ function buildWorkbook(st, M, template) {
     [S('Plan: years ahead'), st.settings.plan ? st.settings.plan.years : ''],
     [S('Plan: deposits per year'), st.settings.plan && st.settings.plan.annual != null ? S(st.settings.plan.annual, 'money') : ''],
     [S('Plan: return per year'), st.settings.plan ? S(st.settings.plan.rate, 'percent') : ''],
+    [S('Compare with'), st.settings.cmp.map(id => id || '-').join(',')],
+    [S('Main comparison'), st.settings.main || ''],
     [],
     [S('File format'), FORMAT_MARK],
     [S('Keep the date in column A and the amount in column B on the Deposits and Values sheets. Withdrawals are negative amounts.', 'note')]
@@ -2034,8 +2552,51 @@ const IMP_TEXT = {
 };
 function importTabs() { return imp.target === 'values' ? ['paste', 'file'] : ['paste', 'file', 'recurring']; }
 const dlgImport = $('#dlg-import');
-function openDialog(d) { if (typeof d.showModal === 'function') { if (!d.open) d.showModal(); } else d.setAttribute('open', ''); }
-function closeDialog(d) { if (typeof d.close === 'function') { if (d.open) d.close(); } else d.removeAttribute('open'); }
+function openDialog(d) {
+  if (d._closing) { d._closing.cancel(); d._closing = null; d.classList.remove('closing'); }
+  d.style.transform = '';
+  if (typeof d.showModal === 'function') { if (!d.open) d.showModal(); } else d.setAttribute('open', '');
+}
+/* Sheets leave the way they came: down off the bottom on a phone, fading on a wide screen. `now` skips the motion. */
+function closeDialog(d, value, now) {
+  if (typeof d.close !== 'function') { d.removeAttribute('open'); return; }
+  if (!d.open) return;
+  if (now || REDUCED || !d.classList.contains('sheet') || d._closing) { if (d._closing) return; d.close(value); return; }
+  const phone = window.innerWidth <= 640, from = d.style.transform || 'translateY(0)';
+  d.classList.add('closing');
+  const a = anim(d, phone ? [{ transform: from }, { transform: 'translateY(104%)' }] : [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateY(10px) scale(.98)' }],
+    { duration: phone ? 240 : 160, easing: 'cubic-bezier(.4,0,.9,.6)', fill: 'forwards' });
+  const done = () => { d._closing = null; d.classList.remove('closing'); d.style.transform = ''; if (a) a.cancel(); if (d.open) d.close(value); };
+  if (!a) { done(); return; }
+  d._closing = a;
+  a.onfinish = done;
+}
+for (const d of $$('dialog.sheet')) {
+  d.addEventListener('cancel', e => { e.preventDefault(); closeDialog(d); });
+  d.addEventListener('click', e => { if (e.target === d) closeDialog(d); });
+  const form = d.querySelector('form');
+  if (form) form.addEventListener('submit', e => { if (e.submitter && e.submitter.value === 'cancel') { e.preventDefault(); closeDialog(d, 'cancel'); } });
+  /* pull the sheet down by its top edge to put it away */
+  const head = d.querySelector('.dlg-head');
+  let drag = null;
+  head.addEventListener('touchstart', e => { if (e.touches.length === 1 && window.innerWidth <= 640) drag = { y0: e.touches[0].clientY, t0: e.timeStamp, dy: 0 }; }, { passive: true });
+  head.addEventListener('touchmove', e => {
+    if (!drag) return;
+    drag.dy = Math.max(0, e.touches[0].clientY - drag.y0);
+    d.style.transition = 'none';
+    d.style.transform = 'translateY(' + drag.dy + 'px)';
+  }, { passive: true });
+  const end = e => {
+    if (!drag) return;
+    const fast = drag.dy / Math.max(1, e.timeStamp - drag.t0) > 0.55;
+    d.style.transition = '';
+    if (drag.dy > 110 || (fast && drag.dy > 30)) closeDialog(d);
+    else d.style.transform = '';
+    drag = null;
+  };
+  head.addEventListener('touchend', end);
+  head.addEventListener('touchcancel', end);
+}
 function resetImport() { Object.assign(imp, { fmt: 'auto', dateCol: null, amountCol: null, delim: null, res: null, toAdd: [], sheetIdx: 0, keep: 'month', plan: null }); }
 function setImportTarget(target) {
   target = target === 'values' ? 'values' : 'deposits';
@@ -2387,6 +2948,60 @@ async function handleAddFile(f) {
   analyzeImport();
 }
 
+/* ---------- choosing what to compare with ----------
+   Up to three at a time. Each keeps its place, and so its colour, until it is taken off; one of them is the
+   main one, the yardstick for the health check and the headline comparison. */
+const dlgPicker = $('#dlg-picker');
+let pickChanged = false;
+function pickSay(msg) {
+  const el = $('#pick-note');
+  el.textContent = msg || 'Choose up to three. The starred one is your main yardstick: the health check and the headline comparison use it.';
+  el.classList.toggle('warn', !!msg);
+  if (msg) anim(el, [{ transform: 'translateX(0)' }, { transform: 'translateX(-5px)' }, { transform: 'translateX(4px)' }, { transform: 'translateX(0)' }], { duration: 260, fill: 'none', easing: 'ease-out' });
+}
+function renderPicker() {
+  const list = benchList(), slots = cmpSlots(), on = slots.filter(Boolean), main = mainBench();
+  const first = lastM && lastM.first != null ? lastM.first : null;
+  const groups = [];
+  for (const g of GROUPS) {
+    const inG = list.filter(b => b.group === g);
+    if (!inG.length) continue;
+    groups.push(h('div', { class: 'pick-group', role: 'group', 'aria-label': g }, h('p', { class: 'pick-head' }, g),
+      ...inG.map(b => {
+        const picked = on.includes(b), isMain = picked && b.id === main.id;
+        const tag = !b.avail ? (PWA ? 'On the way' : 'Installed app') : first != null && b.startT > first + 31 ? 'From ' + dfMonthYear.format(new Date(b.startT * DAY_MS)) : null;
+        const box = h('span', { class: 'pick-box' + (picked ? ' f-' + slotCls(b.id) : ''), 'aria-hidden': 'true' });
+        if (picked) box.innerHTML = ICON_CHECK;
+        return h('div', { class: 'pick-row' + (picked ? ' on' : '') + (b.avail ? '' : ' off') },
+          h('button', { type: 'button', class: 'pick-btn', role: 'checkbox', 'aria-checked': String(picked), 'aria-disabled': b.avail ? null : 'true', 'data-action': 'pick-toggle', 'data-id': b.id },
+            box, h('span', { class: 'pick-text' }, h('b', null, b.name, tag ? h('i', { class: 'pick-tag' }, tag) : null), h('small', null, b.note + (b.priceOnly ? '. Without dividends' : '')))),
+          picked && on.length > 1 ? h('button', { type: 'button', class: 'pick-star' + (isMain ? ' on' : ''), 'data-action': 'pick-main', 'data-id': b.id, 'aria-pressed': String(isMain), 'aria-label': isMain ? b.name + ' is the main comparison' : 'Make ' + b.name + ' the main comparison' },
+            h('span', { 'aria-hidden': 'true' }, '★'), isMain ? 'Main' : null) : null);
+      })));
+  }
+  fill($('#pick-list'), ...groups);
+  const waiting = list.some(b => !b.avail);
+  $('#pick-fine').textContent = 'Funds stand in for the indexes they follow, with dividends reinvested, in US dollars. ' +
+    (!waiting ? '' : PWA ? 'The ones marked “On the way” arrive with the app’s daily data update. ' : 'This preview carries the S&P 500 only: the others come with the installed app’s daily data update. ') + 'The app itself never contacts a price service.';
+}
+function togglePick(id) {
+  const b = benchById(id);
+  if (!b) return;
+  if (!b.avail) { pickSay(PWA ? b.name + ' hasn’t arrived yet. It comes with the app’s daily data update.' : b.name + ' comes with the installed app’s daily data update.'); return; }
+  const slots = cmpSlots(), i = slots.findIndex(x => x && x.id === id), n = slots.filter(Boolean).length;
+  if (i >= 0 && n === 1) { pickSay('Keep at least one to compare with.'); return; }
+  if (i < 0 && n >= 3) { pickSay('Three at a time. Take one off to add ' + b.name + '.'); return; }
+  pickChanged = true; pickSay('');
+  commitSettings(s => {
+    const next = slots.map(x => (x ? x.id : null));
+    if (i >= 0) next[i] = null; else next[next.indexOf(null)] = id;
+    s.settings.cmp = next;
+    if (!next.includes(s.settings.main)) s.settings.main = next.find(Boolean);
+  });
+}
+/* the charts behind the sheet redraw with the new lines once it is out of the way */
+dlgPicker.addEventListener('close', () => { if (pickChanged) { pickChanged = false; fresh.add('tab'); render(); } });
+
 /* ---------- confirm dialog ---------- */
 const dlgConfirm = $('#dlg-confirm');
 function confirmBox(title, body, okLabel, danger) {
@@ -2406,7 +3021,7 @@ function confirmBox(title, body, okLabel, danger) {
 /* ---------- events ---------- */
 const noFile = () => Object.assign(file, { name: null, appFormat: false, dirty: false, savedAt: null, openedAt: null, source: null });
 /* Back to a clean view whenever a different set of numbers is loaded. */
-function resetView() { editing = null; valueOpen = false; histOpen = false; histAll = false; spxOpen = false; openYears.clear(); resetZoom(); perf.preset = 'all'; }
+function resetView() { editing = null; valueOpen = false; histOpen = false; histAll = false; spxOpen = false; openYears.clear(); resetZoom(); perf.preset = 'all'; board.mode = 'money'; board.period = 'all'; for (const k in scrollPos) delete scrollPos[k]; }
 function setGoal(v) {
   const g = v && isFinite(v) && v > 0 ? round2(v) : null;
   if (mode === 'welcome') return;
@@ -2436,7 +3051,7 @@ const actions = {
     toast('New tracker started. Add your deposits, then save to Excel.', prev);
     setTimeout(() => $('#add-amount').focus(), 60);
   },
-  'show-example': () => { state = makeExample(todayDay()); mode = 'example'; noFile(); resetView(); syncPlanFromState(); setTab('overview'); },
+  'show-example': () => { state = makeExample(todayDay()); mode = 'example'; noFile(); resetView(); syncPlanFromState(); setTab('overview'); window.scrollTo(0, 0); },
   'close-file': async () => {
     if (mode === 'data' && file.dirty) {
       closeDialog($('#dlg-settings'));
@@ -2461,8 +3076,19 @@ const actions = {
     toast('Erased from this app.');
   },
   'open-import': btn => openImport(btn.dataset.tab, btn.dataset.target),
-  'zoom-preset': btn => { resetZoom(); zoom.preset = btn.dataset.k; drawGrowth(); },
-  'perf-preset': btn => { perf.preset = btn.dataset.k; if (lastP) renderPerfChart(lastP, perfPeriods(lastP)); },
+  'zoom-preset': btn => { resetZoom(); zoom.preset = btn.dataset.k; drawGrowth(!REDUCED); },
+  'perf-preset': btn => { perf.preset = btn.dataset.k; if (lastP && lastB) replay('perf', () => renderPerfChart(lastP, lastB.byId.get(lastB.main.id).periods, pickRows())); },
+  'board-mode': btn => { if (btn.dataset.k === board.mode) return; board.mode = btn.dataset.k; replay('board', () => renderBoard(lastM)); },
+  'board-period': btn => { board.period = btn.dataset.k; replay('board', () => renderBoard(lastM)); },
+  'go-performance': () => setTab('performance'),
+  'open-picker': () => { if (mode === 'welcome') return; pickChanged = false; pickSay(''); renderPicker(); openDialog(dlgPicker); },
+  'pick-toggle': btn => togglePick(btn.dataset.id),
+  'pick-main': btn => {
+    const id = btn.dataset.id;
+    if (mainBench().id === id || slotOf(id) < 0) return;
+    pickChanged = true; pickSay('');
+    commitSettings(s => { s.settings.main = id; });
+  },
   'go-deposits': () => setTab('deposits'),
   'open-value': () => {
     if (mode === 'welcome' || mode === 'example') return;
@@ -2555,10 +3181,11 @@ function setKind(k) {
   $('#kind-wd').tabIndex = k === 'wd' ? 0 : -1;
   $('#add-submit').textContent = k === 'dep' ? 'Add deposit' : 'Add withdrawal';
   $('#entry-title').textContent = k === 'dep' ? 'Add a deposit' : 'Add a withdrawal';
+  slideThumb($('#kind-dep').parentElement);
 }
 $('#kind-dep').addEventListener('click', () => setKind('dep'));
 $('#kind-wd').addEventListener('click', () => setKind('wd'));
-$('.seg').addEventListener('keydown', e => {
+$('#kind-dep').parentElement.addEventListener('keydown', e => {
   if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) { e.preventDefault(); setKind(kind === 'dep' ? 'wd' : 'dep'); $('#kind-' + kind).focus(); }
 });
 setKind('dep');
@@ -2595,6 +3222,7 @@ function saveValue() {
   valueOpen = false;
   if (mode === 'data' && state.value && state.value.a === round2(a) && state.value.d === iso) { renderValueForm(lastM); return; }
   let latest = iso;
+  fresh.add('growth'); fresh.add('health');
   const prev = commitData(s => {
     upsertHistory(s, iso, round2(a));
     const last = s.history[s.history.length - 1];
