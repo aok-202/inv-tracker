@@ -6,7 +6,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; manifest-src 'self'; worker-src 'self'; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="description" content="Deposits, returns and comparisons with the S&amp;P 500 and other indexes, read from your own Excel file.">
-<meta name="app-version" content="build 2026-11-13.3">
+<meta name="app-version" content="build 2026-11-13.4">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
@@ -294,7 +294,8 @@
           <h3 class="sec-title" id="perf-returns-title">Return over time</h3>
           <div class="card">
             <div class="range-presets" id="perf-presets" role="group" aria-label="Period"></div>
-            <ul class="legend" id="perf-legend"></ul>
+            <p class="legend-when" id="perf-when"></p>
+            <ul class="legend readout" id="perf-legend"></ul>
             <div class="chart" id="perf-chart"></div>
             <div class="table-scroll">
               <table class="num-table matrix" id="perf-table">

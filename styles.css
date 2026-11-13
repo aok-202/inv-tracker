@@ -1,4 +1,4 @@
-/* build 2026-11-13.3 */
+/* build 2026-11-13.4 */
 :root {
   /* Direction: an instrument. The top of the app is one dark panel of ink navy: the bar, the headline figure
      (an odometer, set tall and condensed like a price board) and the chart, lit from behind in green or red
@@ -25,7 +25,10 @@
   --s0: #C97A0B;
   --s1: #14A07F;
   --s2: #B3308C;
-  --sx: #9BA6B6;
+  --s3: #2186BC;
+  --s4: #567914;
+  --s5: #772E82;
+  --s6: #8F520D;
   --edge: rgba(12, 22, 38, 0.18);
   --dep: #7385A0;
   --bar: #A3AFC2;
@@ -61,7 +64,7 @@
     color-scheme: dark;
     --paper: #070C16; --card: #131B28; --raise: #1A2434; --ink: #E8EDF5; --ink-2: #B4C0D2; --muted: #93A1B5;
     --rule: #232E3F; --rule-strong: #364357; --accent: #6A8BF5; --accent-ink: #8FA9FF; --on-accent: #08122B;
-    --you: #6A8BF5; --you-rgb: 106 139 245; --s0: #C3841A; --s1: #1DAA8C; --s2: #B9479A; --sx: #5F6D83; --edge: rgba(0, 0, 0, 0.55); --dep: #7F93B2; --bar: #55647C;
+    --you: #6A8BF5; --you-rgb: 106 139 245; --s0: #C3841A; --s1: #1DAA8C; --s2: #B9479A; --s3: #66CCF4; --s4: #A2CD42; --s5: #E2A5E5; --s6: #FDB770; --on-pale: #0C1830; --edge: rgba(0, 0, 0, 0.55); --dep: #7F93B2; --bar: #55647C;
     --good: #4CCB95; --good-bg: rgba(76, 203, 149, 0.14); --good-rgb: 76 203 149;
     --bad: #FF8B7B; --bad-bg: rgba(255, 139, 123, 0.14); --bad-rgb: 255 139 123;
     --warn: #F0B657; --warn-bg: rgba(240, 182, 87, 0.14); --warn-mark: #E0A53C;
@@ -74,7 +77,7 @@
   color-scheme: dark;
   --paper: #070C16; --card: #131B28; --raise: #1A2434; --ink: #E8EDF5; --ink-2: #B4C0D2; --muted: #93A1B5;
   --rule: #232E3F; --rule-strong: #364357; --accent: #6A8BF5; --accent-ink: #8FA9FF; --on-accent: #08122B;
-  --you: #6A8BF5; --you-rgb: 106 139 245; --s0: #C3841A; --s1: #1DAA8C; --s2: #B9479A; --sx: #5F6D83; --edge: rgba(0, 0, 0, 0.55); --dep: #7F93B2; --bar: #55647C;
+  --you: #6A8BF5; --you-rgb: 106 139 245; --s0: #C3841A; --s1: #1DAA8C; --s2: #B9479A; --s3: #66CCF4; --s4: #A2CD42; --s5: #E2A5E5; --s6: #FDB770; --on-pale: #0C1830; --edge: rgba(0, 0, 0, 0.55); --dep: #7F93B2; --bar: #55647C;
   --good: #4CCB95; --good-bg: rgba(76, 203, 149, 0.14); --good-rgb: 76 203 149;
   --bad: #FF8B7B; --bad-bg: rgba(255, 139, 123, 0.14); --bad-rgb: 255 139 123;
   --warn: #F0B657; --warn-bg: rgba(240, 182, 87, 0.14); --warn-mark: #E0A53C;
@@ -87,7 +90,7 @@
   color-scheme: dark;
   --paper: #0C1830; --card: #1A2A50; --raise: rgba(255, 255, 255, 0.06); --ink: #F2F5FB; --ink-2: #C7D2E6; --muted: #9AABC8;
   --rule: rgba(255, 255, 255, 0.09); --rule-strong: rgba(255, 255, 255, 0.22); --accent: #6A8BF5; --accent-ink: #A5B9FF; --on-accent: #08122B;
-  --you: #6A8BF5; --you-rgb: 106 139 245; --s0: #C3841A; --s1: #1DAA8C; --s2: #B9479A; --sx: rgba(199, 210, 230, 0.45); --dep: #7F93B2;
+  --you: #6A8BF5; --you-rgb: 106 139 245; --s0: #C3841A; --s1: #1DAA8C; --s2: #B9479A; --s3: #66CCF4; --s4: #A2CD42; --s5: #E2A5E5; --s6: #FDB770; --dep: #7F93B2;
   --good: #4CCB95; --good-bg: rgba(76, 203, 149, 0.16); --good-rgb: 76 203 149;
   --bad: #FF8B7B; --bad-bg: rgba(255, 139, 123, 0.16); --bad-rgb: 255 139 123;
   --warn: #F0B657; --warn-bg: rgba(240, 182, 87, 0.16);
@@ -286,9 +289,19 @@ h3 { font-size: 15px; font-weight: 650; margin: 0 0 6px; }
 .hero-chart { margin-top: 16px; }
 /* the chart's legend doubles as its readout: figures that follow your finger */
 .legend.readout { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 12px; margin: 0 0 8px; }
-.legend.readout li { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 0 7px; min-width: 0; }
+.legend.readout li, .legend.readout .leg { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 0 7px; min-width: 0; }
+.legend.readout li.has-btn { display: block; }
 .legend.readout li span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .legend.readout li b { grid-column: 1 / -1; font-size: 16px; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* a key entry is a button: tapping it picks out that line */
+button.leg { width: calc(100% + 12px); margin: -3px -6px; padding: 3px 6px; border: 0; border-radius: 9px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; -webkit-tap-highlight-color: transparent; transition: background-color 0.15s; }
+button.leg[aria-pressed="true"] { background: var(--wash); box-shadow: inset 0 0 0 1px var(--rule-strong); }
+button.leg:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* many picks: a tighter key */
+.legend.readout.dense { gap: 3px 10px; }
+.legend.readout.dense li span { font-size: 12.5px; }
+.legend.readout.dense li b { font-size: 14.5px; line-height: 1.3; }
+.legend-when { margin: 0 0 6px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 @media (min-width: 720px) { .legend.readout { grid-template-columns: repeat(5, max-content); gap: 0 36px; } }
 @media (max-width: 899px) { .hero-chart .chart { width: auto; margin: 0 calc(-1 * var(--gutter)); border-radius: 0; } }
 .stage-controls { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
@@ -408,6 +421,8 @@ h3 { font-size: 15px; font-weight: 650; margin: 0 0 6px; }
 .cmp-chip:active { transform: scale(0.95); }
 .cmp-chip.add { border-style: dashed; background: transparent; color: var(--accent-ink); }
 .cmp-chip .star { font-size: 11px; color: var(--muted); }
+.cmp-bar.dense { gap: 6px; }
+.cmp-bar.dense .cmp-chip { min-height: 32px; padding: 0 11px; gap: 6px; font-size: 13.5px; }
 .dot-key { display: inline-block; width: 9px; height: 9px; border-radius: 50%; flex: none; }
 
 /* ---------- key figures ---------- */
@@ -533,15 +548,24 @@ input[type="date"]:focus-visible, input[type="text"]:focus-visible, select:focus
 .chart .ref { stroke: var(--ink-2); stroke-width: 1.25; stroke-dasharray: 5 4; opacity: 0.75; }
 .chart text.ref-label { fill: var(--ink-2); font-weight: 600; }
 .s-value { stroke: var(--you); } .f-value { fill: var(--you); }
-.s-s0 { stroke: var(--s0); } .f-s0 { fill: var(--s0); }
-.s-s1 { stroke: var(--s1); } .f-s1 { fill: var(--s1); }
-.s-s2 { stroke: var(--s2); } .f-s2 { fill: var(--s2); }
-.s-sx { stroke: var(--sx); } .f-sx { fill: var(--sx); }
+/* Seven colours for the picks, the main one in amber; the 8th to 14th pick reuse them with dashed lines. */
+.s-s0, .s-s13 { stroke: var(--s0); } .f-s0, .f-s13 { fill: var(--s0); }
+.s-s1, .s-s7 { stroke: var(--s1); } .f-s1, .f-s7 { fill: var(--s1); }
+.s-s2, .s-s8 { stroke: var(--s2); } .f-s2, .f-s8 { fill: var(--s2); }
+.s-s3, .s-s9 { stroke: var(--s3); } .f-s3, .f-s9 { fill: var(--s3); }
+.s-s4, .s-s10 { stroke: var(--s4); } .f-s4, .f-s10 { fill: var(--s4); }
+.s-s5, .s-s11 { stroke: var(--s5); } .f-s5, .f-s11 { fill: var(--s5); }
+.s-s6, .s-s12 { stroke: var(--s6); } .f-s6, .f-s12 { fill: var(--s6); }
+.key-s7 { --kc: var(--s1); } .key-s8 { --kc: var(--s2); } .key-s9 { --kc: var(--s3); } .key-s10 { --kc: var(--s4); }
+.key-s11 { --kc: var(--s5); } .key-s12 { --kc: var(--s6); } .key-s13 { --kc: var(--s0); }
 .s-dep { stroke: var(--dep); } .f-dep { fill: var(--dep); }
 .line { fill: none; stroke-width: 2.4; stroke-linejoin: round; stroke-linecap: round; }
 .line.thin { stroke-width: 1.7; }
-/* the picks past the third: thin gray lines behind the others */
-.line.s-sx { stroke-width: 1.2; }
+.line.dash { stroke-dasharray: 6 4; }
+/* a key entry tapped: its line stands out and the other picks step back */
+.chart path.line, .chart circle.dot { transition: opacity 0.2s, stroke-width 0.2s; }
+.chart svg.focusing path.line:not(.hl):not(.s-value):not(.s-dep), .chart svg.focusing circle.dot:not(.hl):not(.f-value):not(.f-dep) { opacity: 0.14; }
+.chart svg.focusing path.line.hl { stroke-width: 2.6; }
 .line.s-dep { stroke-width: 1.4; }
 .stage .line.glow { stroke-width: 2.8; filter: drop-shadow(0 0 7px rgb(var(--you-rgb) / 0.7)); }
 .area { stroke: none; opacity: 0.2; }
@@ -561,7 +585,11 @@ input[type="date"]:focus-visible, input[type="text"]:focus-visible, select:focus
 .tip-row b { font-weight: 650; color: var(--ink); font-variant-numeric: tabular-nums; }
 .tip-row span { color: var(--muted); }
 .key { display: inline-block; width: 14px; height: 3px; border-radius: 2px; }
-.key-value { background: var(--you); } .key-s0 { background: var(--s0); } .key-s1 { background: var(--s1); } .key-s2 { background: var(--s2); } .key-sx { background: var(--sx); } .key-dep { background: var(--dep); }
+.key-value { background: var(--you); } .key-s0 { background: var(--s0); } .key-s1 { background: var(--s1); } .key-s2 { background: var(--s2); } .key-dep { background: var(--dep); }
+.key-s3 { background: var(--s3); } .key-s4 { background: var(--s4); } .key-s5 { background: var(--s5); } .key-s6 { background: var(--s6); }
+/* the dashed ones: a dashed key; as a dot, a ring */
+.key-s7, .key-s8, .key-s9, .key-s10, .key-s11, .key-s12, .key-s13 { background: repeating-linear-gradient(90deg, var(--kc) 0 5px, transparent 5px 8px); }
+.dot-key.key-s7, .dot-key.key-s8, .dot-key.key-s9, .dot-key.key-s10, .dot-key.key-s11, .dot-key.key-s12, .dot-key.key-s13 { background: none; box-shadow: inset 0 0 0 2px var(--kc); }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: var(--muted); margin: 0 0 8px; padding: 0; list-style: none; }
 .legend:empty { display: none; }
 .legend li { display: inline-flex; align-items: center; gap: 7px; }
@@ -796,7 +824,13 @@ dialog.small { width: min(440px, calc(100% - 24px)); }
 .pick-btn { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 12px; align-items: center; text-align: left; background: none; border: 0; border-radius: 10px; padding: 10px 0; min-height: 58px; cursor: pointer; color: inherit; }
 .pick-box { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 9px; border: 2px solid var(--rule-strong); color: #FFFFFF; transition: transform 0.3s var(--spring), border-color 0.15s; }
 .pick-row.on .pick-box { border-color: transparent; animation: pop 0.32s var(--spring); }
-.pick-box.f-s0 { background: var(--s0); } .pick-box.f-s1 { background: var(--s1); } .pick-box.f-s2 { background: var(--s2); } .pick-box.f-sx { background: var(--sx); }
+.pick-box.f-s0 { background: var(--s0); } .pick-box.f-s1 { background: var(--s1); } .pick-box.f-s2 { background: var(--s2); } .pick-box.f-s3 { background: var(--s3); }
+.pick-box.f-s4 { background: var(--s4); } .pick-box.f-s5 { background: var(--s5); } .pick-box.f-s6 { background: var(--s6); }
+/* the four lighter colours of the dark theme carry a dark tick */
+.pick-box.f-s3, .pick-box.f-s4, .pick-box.f-s5, .pick-box.f-s6 { color: var(--on-pale, #FFFFFF); }
+.pick-box.f-s7 { --kc: var(--s1); } .pick-box.f-s8 { --kc: var(--s2); } .pick-box.f-s9 { --kc: var(--s3); } .pick-box.f-s10 { --kc: var(--s4); }
+.pick-box.f-s11 { --kc: var(--s5); } .pick-box.f-s12 { --kc: var(--s6); } .pick-box.f-s13 { --kc: var(--s0); }
+.pick-box.f-s7, .pick-box.f-s8, .pick-box.f-s9, .pick-box.f-s10, .pick-box.f-s11, .pick-box.f-s12, .pick-box.f-s13 { background: none; box-shadow: inset 0 0 0 2.5px var(--kc); color: var(--kc); }
 .pick-quick { display: flex; flex-wrap: wrap; gap: 4px 22px; margin: 2px 0 -6px; font-size: 14.5px; }
 .pick-quick .link:disabled { color: var(--muted); text-decoration: none; cursor: default; }
 .pick-btn:active .pick-box { transform: scale(0.86); }

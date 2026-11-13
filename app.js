@@ -1,4 +1,4 @@
-/* build 2026-11-13.3 */
+/* build 2026-11-13.4 */
 /* app.js: the Investment Tracker interface. Loads after spx-data.js, calc.js and xlsx.js.
    Data lives in the Excel file you open. Nothing is sent anywhere, and nothing is stored
    unless you turn on "Keep a copy on this device". */
@@ -379,20 +379,19 @@ function benchList() {
   return list;
 }
 const benchById = id => { benchList(); return benchCache.byId.get(id) || null; };
-/* The picks, in order. The first is the main yardstick, in amber; the next two places have colours of their own and
-   any after them are drawn in gray, behind. A colour stays with its pick: taking one off leaves its place empty, or
-   gives it to the first one in gray, and nobody else's colour changes. Places 1 and 2 stand empty only while
-   nothing is drawn in gray. */
+/* The picks, in order. The first is the main yardstick, in amber; every place after it has a colour of its own (the
+   8th to 14th reuse the seven colours, dashed). A colour stays with its pick: taking one off leaves its place empty
+   for the next one added, and nobody else's colour changes. */
+const SLOTS = 14;
 function tidyCmp(list) {
-  const out = list.slice(0, 3).concat(list.slice(3).filter(Boolean));
-  while (out.length < 3) out.push(null);
+  const out = list.slice(0, 60).map(x => x || null);
   if (!out[0]) {
     const k = out.findIndex(Boolean);
-    if (k > 0) { out[0] = out[k]; out[k] = k > 2 ? undefined : null; }
+    if (k > 0) { out[0] = out[k]; out[k] = null; }
   }
-  const tidy = out.filter(x => x !== undefined);
-  for (let k = 1; k <= 2; k++) if (!tidy[k] && tidy.length > 3) { tidy[k] = tidy[3]; tidy.splice(3, 1); }
-  return tidy;
+  while (out.length > 1 && !out[out.length - 1]) out.pop();
+  if (!out.length) out.push(null);
+  return out;
 }
 /* the picks as shown: a file can name picks whose data hasn't arrived yet (or that this build doesn't know); they wait
    out of sight, and if none of the picks is here yet the S&P 500 stands in */
@@ -408,8 +407,9 @@ function mainBench() {
   return m || benchById('SPX');
 }
 const slotOf = id => cmpSlots().findIndex(b => b && b.id === id);
-/* series classes: s0 for the main one, s1 and s2 for the next two places, sx (gray) for the rest */
-const slotCls = id => { const i = slotOf(id); return i <= 0 ? 's0' : i <= 2 ? 's' + i : 'sx'; };
+/* series classes: s0 for the main one, then s1 to s13 by place (s7 on: the first colours again, dashed) */
+const slotCls = id => { const i = slotOf(id); return i <= 0 ? 's0' : 's' + (1 + (i - 1) % (SLOTS - 1)); };
+const dashedCls = cls => /^s\d+$/.test(cls) && +cls.slice(1) >= 7;
 const mainName = () => mainBench().name;
 const theMain = () => { const n = mainName(); return /^(S&P|Nasdaq|Dow)/.test(n) ? 'the ' + n : n; };
 
@@ -909,8 +909,11 @@ function axisPad(T, fmt) {
   const compact = Math.max(Math.abs(T.lo), Math.abs(T.hi)) >= 10000;
   return Math.ceil(Math.max(...T.ticks.map(v => textW(fmt(v, compact))))) + 14;
 }
-function legendItem(cls, label, value, area) {
-  return h('li', null, h('i', { class: area ? 'area-key' : 'key key-' + cls }), h('span', null, label), value != null ? h('b', null, value) : null);
+function legendItem(cls, label, value, area, focus) {
+  const kids = [h('i', { class: area ? 'area-key' : 'key key-' + cls }), h('span', null, label), value != null ? h('b', null, value) : null];
+  if (!focus) return h('li', null, ...kids);
+  /* in a chart's key, each line's entry is a button that picks out the line */
+  return h('li', { class: 'has-btn' }, h('button', { type: 'button', class: 'leg', 'data-action': 'focus-line', 'data-chart': focus.chart, 'data-line': cls, 'aria-pressed': String(!!focus.on) }, ...kids));
 }
 /* A line chart. Series types: 'line' and 'step' (optionally with an area down to zero), 'band' (a shaded
    range, pts [x, low, high]) and 'wedge' (a filled outline, pts [x, y] around it).
@@ -924,8 +927,8 @@ function lineChart(box, o) {
   const W = Math.max(260, Math.floor(box.clientWidth || 600)), H = o.height;
   let yMax = -Infinity, yMin = Infinity;
   const see = v => { if (v > yMax) yMax = v; if (v < yMin) yMin = v; };
-  /* lines marked context (the gray ones) don't set the scale: they are cut off at the plot's edge instead */
-  for (const s of o.series) if (!s.context) for (const p of s.pts) { see(p[1]); if (s.type === 'band') see(p[2]); }
+  /* lines marked clip (one running far past the rest) don't set the scale: they are cut off at the plot's edge instead */
+  for (const s of o.series) if (!s.clip) for (const p of s.pts) { see(p[1]); if (s.type === 'band') see(p[2]); }
   for (const r of o.refs || []) if (r.inRange) see(r.value);
   if (!isFinite(yMax)) { yMax = 0; yMin = 0; }
   let lo, hi;
@@ -961,7 +964,7 @@ function lineChart(box, o) {
   }
   const baseY = Y(Math.max(T.lo, Math.min(T.hi, 0)));
   let clipId = null;
-  const clipped = o.series.some(s => s.context && s.pts.some(p => p[1] > T.hi || p[1] < T.lo));
+  const clipped = o.series.some(s => s.clip && s.pts.some(p => p[1] > T.hi || p[1] < T.lo));
   if (clipped) {
     clipId = 'plot-clip-' + (++clipSeq);
     svg.append(sv('defs', null, sv('clipPath', { id: clipId }, sv('rect', { x: ml, y: mt, width: Math.max(1, pw), height: Math.max(1, ph) }))));
@@ -987,9 +990,10 @@ function lineChart(box, o) {
       else d += 'L' + x + ' ' + y;
     });
     if (s.area) svg.append(sv('path', { d: d + 'V' + baseY.toFixed(1) + 'H' + X(s.pts[0][0]).toFixed(1) + 'Z', class: 'area f-' + s.cls }));
-    svg.append(sv('path', { d, class: 'line s-' + s.cls + (s.thin ? ' thin' : '') + (s.dash ? ' dash' : '') + (s.glow ? ' glow' : ''), 'clip-path': s.context && clipId ? 'url(#' + clipId + ')' : null }));
+    const cut = s.clip && clipId ? 'url(#' + clipId + ')' : null;
+    svg.append(sv('path', { d, class: 'line s-' + s.cls + (s.thin ? ' thin' : '') + (s.dash ? ' dash' : '') + (s.glow ? ' glow' : ''), 'clip-path': cut }));
     if (s.dots) for (const p of (s.dotPts || s.pts)) svg.append(sv('circle', { cx: X(p[0]).toFixed(1), cy: Y(p[1]).toFixed(1), r: 3.5, class: 'dot f-' + s.cls }));
-    if (s.end) { const p = s.endPt || s.pts[s.pts.length - 1]; svg.append(sv('circle', { cx: X(p[0]).toFixed(1), cy: Y(p[1]).toFixed(1), r: 4.5, class: 'dot end f-' + s.cls })); }
+    if (s.end) { const p = s.endPt || s.pts[s.pts.length - 1]; svg.append(sv('circle', { cx: X(p[0]).toFixed(1), cy: Y(p[1]).toFixed(1), r: 4.5, class: 'dot end f-' + s.cls, 'clip-path': cut })); }
   }
   for (const r of o.refs || []) {
     if (r.value < T.lo || r.value > T.hi) continue;
@@ -1014,7 +1018,7 @@ function lineChart(box, o) {
     curI = i;
     const x = Math.round(X(o.samples[i])) + 0.5;
     xh.setAttribute('x1', x); xh.setAttribute('x2', x); xh.setAttribute('visibility', 'visible');
-    fill(fg, ...o.focus(i).map(f => sv('circle', { cx: X(f.x).toFixed(1), cy: Y(f.y).toFixed(1), r: 5.5, class: 'dot focus f-' + f.cls })));
+    fill(fg, ...o.focus(i).filter(f => f.y >= T.lo && f.y <= T.hi).map(f => sv('circle', { cx: X(f.x).toFixed(1), cy: Y(f.y).toFixed(1), r: 5.5, class: 'dot focus f-' + f.cls + (f.cls === svg.dataset.hl ? ' hl' : '') })));
     if (o.onRead && changed) o.onRead(i);
     if (!tip) return;
     const r = o.readout(i);
@@ -1059,6 +1063,40 @@ function lineChart(box, o) {
     /* the plot area in page pixels, for turning finger positions into dates */
     plot: () => { const r = svg.getBoundingClientRect(), k = r.width / W; return { left: r.left + ml * k, width: Math.max(1, pw * k) }; }
   };
+}
+/* A key entry tapped: that line (and its dots) stand out and the other picks step back; null puts them all back. */
+function applyFocus(box, cls) {
+  const svg = box && box.querySelector('svg');
+  if (!svg) return;
+  if (cls) svg.dataset.hl = cls; else delete svg.dataset.hl;
+  svg.classList.toggle('focusing', !!cls);
+  svg.querySelectorAll('path.line, circle.dot').forEach(el => el.classList.toggle('hl', !!cls && (el.classList.contains('s-' + cls) || el.classList.contains('f-' + cls))));
+}
+const lineFocus = { growth: null, perf: null };
+/* The lines that run far past all the others (bitcoin, often) would squash them into a strip at the bottom: those
+   are left out of the scale and cut off at the edge, and the key still gives their figures. keep: the values that
+   always set the scale (you, your deposits, the main one); zero: the axis starts at 0. A line is cut when it would
+   stretch the scale by more than three quarters (from 0), or more than double it (zoomed in, where spans are short). */
+function farOut(keep, others, zero) {
+  const limit = zero ? 0.75 : 1;
+  const ext = vals => { let lo = Infinity, hi = -Infinity; for (const v of vals) { if (v < lo) lo = v; if (v > hi) hi = v; } return [lo, hi]; };
+  const base = keep.filter(a => a.length).map(ext).concat(zero ? [[0, 0]] : []);
+  const cand = others.map(l => ({ l, e: ext(l.pts.map(p => p[1])) }));
+  const out = new Set();
+  for (;;) {
+    let worst = null, wx = limit;
+    for (const c of cand) {
+      if (out.has(c.l)) continue;
+      let lo = Infinity, hi = -Infinity;
+      for (const e of base) { lo = Math.min(lo, e[0]); hi = Math.max(hi, e[1]); }
+      for (const d of cand) if (d !== c && !out.has(d.l)) { lo = Math.min(lo, d.e[0]); hi = Math.max(hi, d.e[1]); }
+      if (!(hi > lo)) continue;
+      const x = Math.max(c.e[1] - hi, lo - c.e[0], 0) / (hi - lo);
+      if (x > wx) { wx = x; worst = c; }
+    }
+    if (!worst) return out;
+    out.add(worst.l);
+  }
 }
 function roundedBar(x, w, y0, y1, r) {
   const hgt = Math.abs(y0 - y1);
@@ -1219,7 +1257,7 @@ function renderGrowth(M) {
   $('#growth').hidden = false;
   drawSpark(G);
   drawGrowth(plays('growth'));
-  growthTable(G);
+  growthTable(G, M);
 }
 
 /* The outline of the space between your value line and what you'd paid in: along the value line,
@@ -1249,15 +1287,14 @@ function drawGrowth(play) {
   const main = mainBench();
   const V = windowSeries(G, M.deps, main.A, w.a, w.b);
   gz.V = V;
-  /* Every pick, sampled on the same days as the main one. The main one and the next two have colours; any more are
-     drawn in gray behind them. Each line is fixed from the start: the window only chooses what to show. */
+  /* Every pick, each its own line, sampled on the same days as the main one (main one first, then by place). Each line
+     is fixed from the start: the window only chooses what to show. */
   const joins = [];
   const lines = cmpSlots().filter(Boolean).map(b => {
     const S = b.id === main.id ? V : windowSeries(Object.assign({}, G, { spOK: G.start >= b.startT }), M.deps, b.A, w.a, w.b);
     if (S.join) joins.push({ b, t: S.join.t });
-    return { b, cls: slotCls(b.id), at: new Map(S.pts.map(p => [p.t, p.sp])), pts: S.pts.filter(p => p.sp != null).map(p => [p.t, p.sp]) };
+    return { b, cls: slotCls(b.id), main: b.id === main.id, at: new Map(S.pts.map(p => [p.t, p.sp])), pts: S.pts.filter(p => p.sp != null).map(p => [p.t, p.sp]) };
   }).filter(x => x.pts.length);
-  const bright = lines.filter(l => l.cls !== 'sx'), gray = lines.filter(l => l.cls === 'sx');
   const plot = $('#growth-plot');
   const lastReal = V.vin.length ? V.vin[V.vin.length - 1] : null;
   /* A value for every day would make a scribble: draw the last of each week or month instead (whichever fits),
@@ -1271,8 +1308,9 @@ function drawGrowth(play) {
   }
   const series = [{ cls: 'dep', type: 'step', area: true, pts: V.pts.map(p => [p.t, p.dep]) }];
   if (vline.length > 1) series.push({ cls: 'value', type: 'wedge', pts: wedgePath(vline, V.pts) });
-  for (const l of gray) series.push({ cls: 'sx', type: 'line', thin: true, context: true, pts: l.pts });
-  for (const l of bright.slice().reverse()) series.push({ cls: l.cls, type: 'line', thin: true, end: true, pts: l.pts });
+  const far = farOut([vline.map(p => p[1]), V.pts.map(p => p.dep)].concat(lines.filter(l => l.main).map(l => l.pts.map(p => p[1]))), lines.filter(l => !l.main), !zoomed);
+  /* the picks under your line, the main one on top of the others */
+  for (const l of lines.slice().reverse()) series.push({ cls: l.cls, type: 'line', thin: true, end: true, dash: dashedCls(l.cls), clip: far.has(l), pts: l.pts });
   if (vline.length) series.push({ cls: 'value', type: 'line', glow: true, pts: vline, dots: drawn.length <= 14, dotPts: drawn.map(v => [v.t, v.a]), end: !!lastReal, endPt: lastReal ? [lastReal.t, lastReal.a] : null });
   const valBy = new Map(V.vin.map(v => [v.t, v.a]));
   /* Reading the chart stops at your own values (the points on the line), so every stop shows your portfolio
@@ -1284,21 +1322,16 @@ function drawGrowth(play) {
   const paintLegend = p => {
     const youV = p ? (valBy.has(p.t) ? valBy.get(p.t) : null) : lastReal ? lastReal.a : null;
     const box = $('#growth-legend'), depV = (p || lastP).dep;
-    const bm = bright.map(l => ({ l, v: p ? l.at.get(p.t) : l.pts[l.pts.length - 1][1] }));
+    const bm = lines.map(l => ({ l, v: p ? l.at.get(p.t) : l.pts[l.pts.length - 1][1] }));
     /* the figures share a row: when full amounts won't fit a narrow phone, they all go short (12.3M) */
     let fmt = v => (v == null ? '—' : money(v, { dec: 0 }));
-    const colW = ((box.clientWidth || 340) - 24) / 3;
-    if (!isWide() && [youV, depV].concat(bm.map(x => x.v)).some(v => textW(fmt(v), 16) * 1.12 > colW)) fmt = v => (v == null ? '—' : money(v, { compact: true }));
-    /* the ones in gray, together: how many of them you are above, at the point being read */
-    let rest = null;
-    if (gray.length) {
-      const vs = gray.map(l => (p ? l.at.get(p.t) : l.pts[l.pts.length - 1][1])).filter(v => v != null);
-      rest = legendItem('sx', gray.length + ' more', youV == null || !vs.length ? '—' : hideAmounts ? '•••' : 'ahead of ' + vs.filter(v => youV >= v).length);
-    }
+    const dense = bm.length > 4, colW = ((box.clientWidth || 340) - (dense ? 20 : 24)) / 3;
+    if (!isWide() && [youV, depV].concat(bm.map(x => x.v)).some(v => textW(fmt(v), dense ? 14.5 : 16) * 1.12 > colW)) fmt = v => (v == null ? '—' : money(v, { compact: true }));
+    const foc = lines.length ? lineFocus.growth : null, tap = cls => ({ chart: 'growth', on: foc === cls });
+    box.classList.toggle('dense', dense);
     fill(box,
-      vline.length ? legendItem('value', 'You', fmt(youV)) : null,
-      ...bm.map(x => legendItem(x.l.cls, x.l.b.short || x.l.b.name, fmt(x.v))),
-      rest,
+      vline.length ? legendItem('value', 'You', fmt(youV), false, lines.length ? tap('value') : null) : null,
+      ...bm.map(x => legendItem(x.l.cls, x.l.b.short || x.l.b.name, fmt(x.v), false, tap(x.l.cls))),
       legendItem('dep', 'Deposited', fmt(depV), true));
   };
   gz.api = lineChart(plot, {
@@ -1307,7 +1340,7 @@ function drawGrowth(play) {
     series, yFmt: yMoney, samples: stops,
     focus: i => {
       const p = ptBy.get(stops[i]), f = [{ cls: 'dep', x: p.t, y: p.dep }];
-      for (const l of bright) { const v = l.at.get(p.t); if (v != null) f.push({ cls: l.cls, x: p.t, y: v }); }
+      for (const l of lines) { const v = l.at.get(p.t); if (v != null) f.push({ cls: l.cls, x: p.t, y: v }); }
       if (valBy.has(p.t)) f.push({ cls: 'value', x: p.t, y: valBy.get(p.t) });
       return f;
     },
@@ -1319,15 +1352,19 @@ function drawGrowth(play) {
     label: 'Line chart' + (zoomed ? ' from ' + fmtDay(w.a) + ' to ' + fmtDay(w.b) : '') + ': money deposited, your portfolio value, and ' +
       'the same deposits in ' + (lines.map(l => l.b.name).join(', ') || 'an index') + ', over time'
   });
+  /* a line picked out from the key stays picked out while it is drawn; one taken off the chart lets the others back */
+  if (lineFocus.growth && lineFocus.growth !== 'value' && !lines.some(l => l.cls === lineFocus.growth)) lineFocus.growth = null;
+  if (!lines.length) lineFocus.growth = null;
+  applyFocus(plot, lineFocus.growth);
   $('#growth-chart').classList.toggle('zoomed', zoomed);
   $('#growth-nav').hidden = !zoomable;
   if (zoomable) navLayout(G, w);
   renderPresets(G, zoomable);
   const names = lines.map(l => l.b.short || l.b.name);
   const spNote = lines.length ? (names.length > 1 ? 'The other lines: ' : names[0] + ': ') + 'your deposits, put into ' + (names.length > 1 ? 'each one' : 'it') + ' on the same days. ' +
-    (gray.length ? 'The ' + gray.length + ' in gray: ' + gray.map(l => l.b.short || l.b.name).join(', ') + '. ' : '') +
+    (names.length > 1 ? 'Tap a name above to pick out its line. ' : '') +
     joins.map(j => (j.b.short || j.b.name) + '’s data starts later, so its line joins level with you on ' + fmtDay(j.t) + '. ').join('') : '';
-  const cut = gz.api && gz.api.clipped ? ' A gray line that runs past the edge is cut off there.' : '';
+  const cut = gz.api && gz.api.clipped ? ' ' + cutNote(lines.filter(l => far.has(l)).map(l => l.b.short || l.b.name), 'the key above') : '';
   $('#growth-window').textContent = (zoomed ? fmtDay(w.a) + ' to ' + fmtDay(w.b) + ' (' + spanText(w.b - w.a) + ').' + cut
     : spNote + (zoomable ? 'Pinch the chart or drag the handles to look closer.' : '') + cut).trim();
   renderCompare(V, zoomed);
@@ -1335,6 +1372,12 @@ function drawGrowth(play) {
   paintHero(null);
 }
 
+/* "Bitcoin runs far past the others, so its line is cut off at the edge of the chart; the key above has its figure." */
+function cutNote(names, where) {
+  if (!names.length) return '';
+  const one = names.length === 1, list = one ? names[0] : names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
+  return list + (one ? ' runs' : ' run') + ' far past the others, so ' + (one ? 'its line is' : 'their lines are') + ' cut off at the edge of the chart; ' + where + ' has ' + (one ? 'its figure.' : 'their figures.');
+}
 /* Period buttons with a pill that slides to the one in use. */
 const thumbAt = new WeakMap();
 function slideThumb(box) {
@@ -1388,20 +1431,28 @@ function renderCompare(V, zoomed) {
       money(c.gap0, { sign: true, dec: 0 }) + ' to ' + money(c.gap1, { sign: true, dec: 0 }) + '; you both had the same deposits in between, so the change is what each made of the money.'));
 }
 
-function growthTable(G) {
+/* The chart as a table: a column for every line on it, each pick with the same deposits. */
+function growthTable(G, M) {
   const valBy = new Map(G.vals.map(v => [v.t, v.a]));
   const rowsT = new Set();
   for (const p of G.pts) if (dayMonth(p.t) === 12 && dayDate(p.t) === 31) rowsT.add(p.t);
   for (const v of G.vals) rowsT.add(v.t);
   rowsT.add(G.end);
   const byT = new Map(G.pts.map(p => [p.t, p]));
+  const main = mainBench();
+  const cols = cmpSlots().filter(Boolean).map(b => {
+    const S = b.id === main.id ? null : windowSeries(Object.assign({}, G, { spOK: G.start >= b.startT }), M.deps, b.A, G.start, G.end);
+    return { b, cls: slotCls(b.id), at: S ? new Map(S.pts.map(p => [p.t, p.sp])) : new Map(G.pts.map(p => [p.t, p.sp])) };
+  });
   const trs = [...rowsT].filter(t => byT.has(t)).sort((a, b) => b - a).map(t => {
     const p = byT.get(t);
     return h('tr', null, h('td', null, fmtDay(t)), h('td', null, money(p.dep, { dec: 0 })),
-      h('td', null, valBy.has(t) ? money(valBy.get(t), { dec: 0 }) : '—'), h('td', null, p.sp != null ? money(p.sp, { dec: 0 }) : '—'));
+      h('td', null, valBy.has(t) ? money(valBy.get(t), { dec: 0 }) : '—'),
+      ...cols.map(c => { const v = c.at.get(t); return h('td', null, v != null ? money(v, { dec: 0 }) : '—'); }));
   });
   fill($('#growth-table'), h('table', { class: 'num-table' },
-    h('thead', null, h('tr', null, h('th', { scope: 'col' }, 'Date'), h('th', { scope: 'col' }, 'Deposited'), h('th', { scope: 'col' }, 'Your portfolio'), h('th', { scope: 'col' }, mainName() + ', same deposits'))),
+    h('thead', null, h('tr', null, h('th', { scope: 'col' }, 'Date'), h('th', { scope: 'col' }, 'Deposited'), h('th', { scope: 'col' }, 'Your portfolio'),
+      ...cols.map(c => h('th', { scope: 'col' }, h('i', { class: 'dot-key key-' + c.cls }), ' ', (c.b.short || c.b.name) + (cols.length === 1 ? ', same deposits' : ''))))),
     h('tbody', null, trs)));
 }
 
@@ -1868,12 +1919,11 @@ function renderPerformance(M) {
 /* What you're comparing with, as chips; tapping opens the list to choose from. */
 function renderCmpBar() {
   const main = mainBench(), waiting = !BENCH_DATA.series.length;
-  const on = cmpSlots().filter(Boolean), more = on.filter(b => slotCls(b.id) === 'sx');
-  fill($('#cmp-bar'), h('span', { class: 'cmp-label' }, 'Against'),
-    ...on.filter(b => slotCls(b.id) !== 'sx').map(b => h('button', { type: 'button', class: 'cmp-chip', 'data-action': 'open-picker', 'aria-label': 'Compared with ' + b.name + (b.id === main.id ? ', the main one' : '') + '. Change' },
+  const on = cmpSlots().filter(Boolean), bar = $('#cmp-bar');
+  bar.classList.toggle('dense', on.length > 4);
+  fill(bar, h('span', { class: 'cmp-label' }, 'Against'),
+    ...on.map(b => h('button', { type: 'button', class: 'cmp-chip', 'data-action': 'open-picker', 'aria-label': 'Compared with ' + b.name + (b.id === main.id ? ', the main one' : '') + '. Change' },
       h('i', { class: 'dot-key key-' + slotCls(b.id) }), b.short || b.name, b.id === main.id && on.length > 1 ? h('span', { class: 'star', 'aria-hidden': 'true' }, '★') : null)),
-    more.length ? h('button', { type: 'button', class: 'cmp-chip', 'data-action': 'open-picker', 'aria-label': 'And ' + more.map(b => b.name).join(', ') + ', in gray. Change' },
-      h('i', { class: 'dot-key key-sx' }), '+' + more.length + ' more') : null,
     h('button', { type: 'button', class: 'cmp-chip add', 'data-action': 'open-picker' }, waiting ? (PWA ? 'More on the way' : 'More in the installed app') : 'Change'));
 }
 
@@ -1962,28 +2012,32 @@ function renderPerfChart(P, periods, picks) {
     const per = x.row.periods.find(r => r.k === perf.preset);
     return { b: x.b, cls: x.cls, pts, by: new Map(pts), total: b0 != null && per ? per.sp : null };
   }).filter(l => l.pts.length > 1);
-  const bright = lines.filter(l => l.cls !== 'sx'), gray = lines.filter(l => l.cls === 'sx');
-  const beaten = (you, vals) => vals.filter(v => v != null && you >= v).length;
-  const rest = gray.length ? legendItem('sx', gray.length + ' more', 'ahead of ' + beaten(row.you, gray.map(l => l.total))) : null;
-  fill($('#perf-legend'), legendItem('value', 'You', pct(row.you)), ...bright.map(l => legendItem(l.cls, l.b.short || l.b.name, l.total != null ? pct(l.total) : null)), rest);
+  const mainId = mainBench().id;
+  const far = farOut([you.map(p => p[1])].concat(lines.filter(l => l.b.id === mainId).map(l => l.pts.map(p => p[1]))), lines.filter(l => l.b.id !== mainId), true);
+  if (lineFocus.perf && (!lines.length || (lineFocus.perf !== 'value' && !lines.some(l => l.cls === lineFocus.perf)))) lineFocus.perf = null;
+  /* The key is the readout: every line's return to the end of the period, or to the point being read. */
+  const paint = i => {
+    const t = i < 0 ? null : drawn[i].t, foc = lineFocus.perf, tap = cls => ({ chart: 'perf', on: foc === cls });
+    const lg = $('#perf-legend');
+    lg.classList.toggle('dense', lines.length > 4);
+    fill(lg, legendItem('value', 'You', pct(t == null ? row.you : you[i][1]), false, lines.length ? tap('value') : null),
+      ...lines.map(l => { const v = t == null ? (l.total != null ? l.total : l.pts[l.pts.length - 1][1]) : l.by.get(t); return legendItem(l.cls, l.b.short || l.b.name, v == null ? '—' : pct(v), false, tap(l.cls)); }));
+    $('#perf-when').textContent = 'Return from ' + fmtDay(base.t) + ' to ' + fmtDay(t == null ? drawn[drawn.length - 1].t : t);
+  };
   const api = lineChart(box, {
     height: isWide() ? 290 : 226, x0: base.t, x1: P.t1, xTicks: timeTicks(base.t, P.t1, box.clientWidth || 600), animate: plays('perf'),
-    series: gray.map(l => ({ cls: 'sx', type: 'line', thin: true, context: true, pts: l.pts }))
-      .concat(bright.slice().reverse().map(l => ({ cls: l.cls, type: 'line', thin: true, end: true, pts: l.pts })))
+    series: lines.slice().reverse().map(l => ({ cls: l.cls, type: 'line', thin: true, end: true, dash: dashedCls(l.cls), clip: far.has(l), pts: l.pts }))
       .concat([{ cls: 'value', type: 'line', end: true, dots: you.length <= 14, pts: you }]),
-    yFmt: v => pct(v, { dec: 0 }), samples: drawn.map(p => p.t),
-    readout: i => {
-      const t = drawn[i].t, inGray = gray.filter(l => l.by.has(t));
-      return { title: fmtDay(t), rows: [{ cls: 'value', value: pct(you[i][1]), label: 'You' }]
-        .concat(bright.filter(l => l.by.has(t)).map(l => ({ cls: l.cls, value: pct(l.by.get(t)), label: l.b.short || l.b.name })))
-        .concat(inGray.length ? [{ cls: 'sx', value: 'ahead of ' + beaten(you[i][1], inGray.map(l => l.by.get(t))), label: inGray.length + ' more' }] : []) };
-    },
-    focus: i => [{ cls: 'value', x: you[i][0], y: you[i][1] }].concat(bright.filter(l => l.by.has(drawn[i].t)).map(l => ({ cls: l.cls, x: drawn[i].t, y: l.by.get(drawn[i].t) }))),
+    yFmt: v => pct(v, { dec: 0 }), samples: drawn.map(p => p.t), tip: false, onRead: paint,
+    focus: i => [{ cls: 'value', x: you[i][0], y: you[i][1] }].concat(lines.filter(l => l.by.has(drawn[i].t)).map(l => ({ cls: l.cls, x: drawn[i].t, y: l.by.get(drawn[i].t) }))),
     label: 'Line chart: your return since ' + fmtDay(base.t) + (lines.length ? ' against ' + lines.map(l => l.b.name).join(', ') : '')
   });
+  paint(-1);
+  applyFocus(box, lineFocus.perf);
   $('#perf-fine').textContent = 'Total return since ' + fmtDay(base.t) + ', dividends reinvested. Between your saved values the lines run straight, because what happened in between isn’t known.' +
     (lines.some(l => l.total == null) ? ' A line that starts later begins level with you on the day its data starts.' : '') +
-    (api.clipped ? ' The scale follows you and the coloured lines, so a gray line that runs past the edge is cut off there; the table has its figures.' : '') +
+    (lines.length > 1 ? ' Touch the chart to read a date; tap a name in the key to pick out its line.' : ' Touch the chart to read a date.') +
+    (api.clipped ? ' ' + cutNote(lines.filter(l => far.has(l)).map(l => l.b.short || l.b.name), 'the key above') : '') +
     (picks.length ? ' In the tables, a filled dot marks where you came out ahead and a ring where you were behind.' : '');
 }
 
@@ -3006,7 +3060,7 @@ const dlgPicker = $('#dlg-picker');
 let pickChanged = false;
 function pickSay(msg) {
   const el = $('#pick-note');
-  el.textContent = msg || 'Choose as many as you like. The starred one is your main yardstick, in amber: the health check and the headline comparison use it. The next two have colours of their own; any more are drawn in gray behind them.';
+  el.textContent = msg || 'Choose as many as you like: each gets a line and a colour of its own. The starred one is your main yardstick, in amber: the health check and the headline comparison use it. Past the seventh, the colours come round again with dashed lines.';
   el.classList.toggle('warn', !!msg);
   if (msg) anim(el, [{ transform: 'translateX(0)' }, { transform: 'translateX(-5px)' }, { transform: 'translateX(4px)' }, { transform: 'translateX(0)' }], { duration: 260, fill: 'none', easing: 'ease-out' });
 }
@@ -3046,8 +3100,8 @@ function togglePick(id) {
   if (picked && on.length === 1) { pickSay('Keep at least one to compare with.'); return; }
   setPicks(l => {
     const j = l.indexOf(id);
-    if (j >= 0) { if (j <= 2) l[j] = null; else l.splice(j, 1); }
-    else { const k = l.indexOf(null); if (k >= 0 && k <= 2) l[k] = id; else l.push(id); }
+    if (j >= 0) l[j] = null;
+    else { const k = l.indexOf(null, 1); if (k > 0) l[k] = id; else l.push(id); }
     return l;
   });
 }
@@ -3142,6 +3196,13 @@ const actions = {
   'go-performance': () => setTab('performance'),
   'open-picker': () => { if (mode === 'welcome') return; pickChanged = false; pickSay(''); renderPicker(); openDialog(dlgPicker); },
   'pick-toggle': btn => togglePick(btn.dataset.id),
+  'focus-line': btn => {
+    const k = btn.dataset.chart, cls = btn.dataset.line;
+    if (!(k in lineFocus)) return;
+    lineFocus[k] = lineFocus[k] === cls ? null : cls;
+    applyFocus(k === 'growth' ? $('#growth-plot') : $('#perf-chart'), lineFocus[k]);
+    $$('#' + (k === 'growth' ? 'growth-legend' : 'perf-legend') + ' button.leg').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.line === lineFocus[k])));
+  },
   'pick-main': btn => {
     const id = btn.dataset.id;
     if (mainBench().id === id || slotOf(id) < 0) return;
@@ -3149,7 +3210,7 @@ const actions = {
     setPicks(l => { const j = l.indexOf(id); if (j > 0) [l[0], l[j]] = [l[j], l[0]]; return l; });
   },
   'pick-all': () => setPicks(l => {
-    for (const b of benchList()) if (b.avail && !l.includes(b.id)) { const k = l.indexOf(null); if (k >= 0 && k <= 2) l[k] = b.id; else l.push(b.id); }
+    for (const b of benchList()) if (b.avail && !l.includes(b.id)) { const k = l.indexOf(null, 1); if (k > 0) l[k] = b.id; else l.push(b.id); }
     return l;
   }),
   'pick-main-only': () => setPicks(l => [l[0]]),

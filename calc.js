@@ -1,4 +1,4 @@
-/* build 2026-11-13.3 */
+/* build 2026-11-13.4 */
 /* calc.js: dates, returns (CAGR, XIRR), the S&P 500 comparison, and reading pasted or
    uploaded tables. No network, no storage; plain functions only. */
 const DAY_MS = 86400000;
