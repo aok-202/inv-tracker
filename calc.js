@@ -1,4 +1,4 @@
-/* build 2026-11-13.2 */
+/* build 2026-11-13.3 */
 /* calc.js: dates, returns (CAGR, XIRR), the S&P 500 comparison, and reading pasted or
    uploaded tables. No network, no storage; plain functions only. */
 const DAY_MS = 86400000;
@@ -247,66 +247,44 @@ function valueAt(vals, t) {
   return q.t === p.t ? q.a : p.a + ((q.a - p.a) * (t - p.t)) / (q.t - p.t);
 }
 
-/* Your portfolio against the S&P 500 over a window of days [a, b].
-   It starts from a value that's known: nothing before your first deposit, or else your first
-   saved value inside the window. It ends at the last saved value inside the window. The S&P 500
-   side starts with the same money and gets the same deposits on the same days.
-   Return is the gain divided by the money at work, counting each deposit from its date (Modified Dietz). */
-function compareWindow(G, deps, A, a, b) {
-  const fromStart = a <= G.start;
-  const vin = G.vals.filter(v => v.t >= a && v.t <= b);
-  const out = { fromStart, t0: null, V0: null };
-  if (fromStart) { out.t0 = G.start; out.V0 = 0; }
-  else if (vin.length) { out.t0 = vin[0].t; out.V0 = vin[0].a; }
-  else { out.problem = 'novalue'; return out; }
-  const tr0 = trAt(A, out.t0);
-  if (tr0 == null) { out.problem = 'nosp'; out.t0 = null; return out; }
-  const end = vin.length ? vin[vin.length - 1] : null;
-  if (!end || end.t <= out.t0) { out.problem = vin.length ? 'onevalue' : 'novalue'; return out; }
-  const t1 = end.t, span = t1 - out.t0;
-  let units = out.V0 / tr0, net = 0, wsum = 0;
-  for (const d of deps) {
-    if (d.t > t1) break;
-    if (fromStart ? d.t < out.t0 : d.t <= out.t0) continue;
-    units += d.a / trAt(A, d.t);
-    net += d.a;
-    wsum += (d.a * (t1 - d.t)) / span;
-  }
-  const S1 = units * trAt(A, t1);
-  Object.assign(out, { t1, V1: end.a, S1, net, gainV: end.a - out.V0 - net, gainS: S1 - out.V0 - net, diff: end.a - S1 });
-  const base = out.V0 + wsum;
-  out.retV = base > 0 ? out.gainV / base : null;
-  out.retS = base > 0 ? out.gainS / base : null;
-  return out;
-}
-
-/* What the growth chart draws for a window of days [a, b]. When the window starts after your first
-   deposit, the S&P 500 line restarts from your value at the start of the comparison. */
+/* A stretch of the chart, days [a, b], is a window onto the whole: every line is worked out from the start and
+   zooming only chooses which part to show, so nothing moves or changes value when the window does. An index's
+   line is your deposits put into it on the same days from your first deposit. One whose data starts after that
+   joins at your first saved value on or after its data starts, level with you, and runs on from there. */
 function windowSeries(G, deps, A, a, b) {
-  const cmp = compareWindow(G, deps, A, a, b);
-  const rebased = !cmp.fromStart && cmp.t0 != null;
   const set = new Set([a, b]);
   for (const p of G.pts) if (p.t > a && p.t < b) set.add(p.t);
   for (const v of G.vals) if (v.t > a && v.t < b) set.add(v.t);
   const days = [...set].sort((x, y) => x - y);
+  const full = !!G.spOK;
+  const join = full ? null : G.vals.find(v => trAt(A, v.t) != null) || null;
   const pts = [];
-  let i = 0, cum = 0, uAll = 0, uReb = rebased ? cmp.V0 / trAt(A, cmp.t0) : 0;
+  let i = 0, cum = 0, units = join ? join.a / trAt(A, join.t) : 0;
   for (const t of days) {
     while (i < deps.length && deps[i].t <= t) {
       const d = deps[i++];
       cum += d.a;
-      if (G.spOK) uAll += d.a / trAt(A, d.t);
-      if (rebased && d.t > cmp.t0) uReb += d.a / trAt(A, d.t);
+      if (full || (join && d.t > join.t)) units += d.a / trAt(A, d.t);
     }
-    const sp = rebased ? (t >= cmp.t0 ? uReb * trAt(A, t) : null) : G.spOK ? uAll * trAt(A, t) : null;
-    pts.push({ t, dep: cum, sp });
+    pts.push({ t, dep: cum, sp: full || (join && t >= join.t) ? units * trAt(A, t) : null });
   }
   const vin = G.vals.filter(v => v.t >= a && v.t <= b);
   const vline = vin.map(v => [v.t, v.a]);
   const va = valueAt(G.vals, a), vb = valueAt(G.vals, b);
   if (va != null && !(vin.length && vin[0].t === a)) vline.unshift([a, va]);
   if (vb != null && !(vin.length && vin[vin.length - 1].t === b)) vline.push([b, vb]);
-  return { a, b, pts, vline, vin, cmp, rebased };
+  return { a, b, pts, vline, vin, join, cmp: windowEdges(pts, vin) };
+}
+
+/* The stretch in figures, read straight off those lines at your first and last saved values in view: where each
+   stood, and how much the gap between you and the index changed. Both sides got the same deposits in between, so
+   that change is what each made of the money over the stretch. */
+function windowEdges(pts, vin) {
+  const at = new Map(pts.map(p => [p.t, p]));
+  const ends = vin.filter(v => at.has(v.t) && at.get(v.t).sp != null);
+  if (ends.length < 2) return { problem: !vin.length ? 'novalue' : !pts.some(p => p.sp != null) ? 'nosp' : 'onevalue' };
+  const s = ends[0], e = ends[ends.length - 1], ps = at.get(s.t), pe = at.get(e.t);
+  return { t0: s.t, t1: e.t, you0: s.a, you1: e.a, sp0: ps.sp, sp1: pe.sp, dep0: ps.dep, dep1: pe.dep, gap0: s.a - ps.sp, gap1: e.a - pe.sp, gained: (e.a - pe.sp) - (s.a - ps.sp) };
 }
 
 /* ---- performance: how your investments did, whatever you paid in and when ----
@@ -1034,10 +1012,10 @@ function readAppWorkbook(wb, opts) {
         rate: pr >= 0 && pr <= 0.15 ? pr : 0.07
       };
     }
-    /* which indexes and funds to compare with: up to three ids, "-" for an empty place, and the main one */
+    /* which indexes and funds to compare with: any number of ids, "-" for an empty place, and the main one */
     const idOf = v => { const t = String(v == null ? '' : v).trim().toUpperCase(); return /^[A-Z0-9._^-]{1,12}$/.test(t) && t !== '-' ? t : null; };
     const cw = kv.get('compare with');
-    if (cw != null && String(cw).trim() !== '') out.settings.cmp = String(cw).split(',').slice(0, 3).map(idOf);
+    if (cw != null && String(cw).trim() !== '') out.settings.cmp = String(cw).split(',').slice(0, 60).map(idOf);
     out.settings.main = idOf(kv.get('main comparison'));
   }
   return out;
@@ -1084,4 +1062,4 @@ function bestDepositSheet(wb, opts) {
   });
   return best;
 }
-if (typeof module !== 'undefined') module.exports = { ymdToIso, isoToDay, dayToIso, dayYear, buildAnchors, trAt, xirr, computeMetrics, sameDeposits, seriesAnchors, blendAnchors, riskStats, deepestDrop, healthChecks, growthSeries, valueAt, compareWindow, windowSeries, perfSeries, nearIdx, perfSpan, perfYears, perfMonths, perfPeriods, perfStats, flowsBetween, monthsToGoal, planValues, thinValues, projectSeries, recurringDates, dateParts, resolveDate, parseAmount, guessDecimalComma, numberCore, analyzeRows, parseTextTable, serialToIso, isAppWorkbook, readAppWorkbook, findCurrentValue, bestDepositSheet, FORMAT_MARK };
+if (typeof module !== 'undefined') module.exports = { ymdToIso, isoToDay, dayToIso, dayYear, buildAnchors, trAt, xirr, computeMetrics, sameDeposits, seriesAnchors, blendAnchors, riskStats, deepestDrop, healthChecks, growthSeries, valueAt, windowSeries, windowEdges, perfSeries, nearIdx, perfSpan, perfYears, perfMonths, perfPeriods, perfStats, flowsBetween, monthsToGoal, planValues, thinValues, projectSeries, recurringDates, dateParts, resolveDate, parseAmount, guessDecimalComma, numberCore, analyzeRows, parseTextTable, serialToIso, isAppWorkbook, readAppWorkbook, findCurrentValue, bestDepositSheet, FORMAT_MARK };

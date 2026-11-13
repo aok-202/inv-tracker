@@ -1,4 +1,4 @@
-/* build 2026-11-13.2 */
+/* build 2026-11-13.3 */
 /* app.js: the Investment Tracker interface. Loads after spx-data.js, calc.js and xlsx.js.
    Data lives in the Excel file you open. Nothing is sent anywhere, and nothing is stored
    unless you turn on "Keep a copy on this device". */
@@ -230,15 +230,17 @@ function normalize(o) {
         rate: rate >= 0 && rate <= 0.15 ? rate : 0.07
       };
     }
-    /* up to three things to compare with, each keeping its place (and so its colour), and which one is the main one */
+    /* what to compare with: any number, the main one first (earlier versions kept three places, with gaps) */
     const c = o.settings.cmp;
     if (Array.isArray(c)) {
       const seen = new Set();
-      const slots = [0, 1, 2].map(i => { const id = typeof c[i] === 'string' && BENCH_ID.test(c[i]) && !seen.has(c[i]) ? c[i] : null; if (id) seen.add(id); return id; });
-      if (slots.some(Boolean)) s.settings.cmp = slots;
+      const ids = c.slice(0, 60).map(v => { const id = typeof v === 'string' && BENCH_ID.test(v) && !seen.has(v) ? v : null; if (id) seen.add(id); return id; });
+      if (ids.some(Boolean)) s.settings.cmp = ids;
     }
-    const mn = o.settings.main;
-    s.settings.main = typeof mn === 'string' && s.settings.cmp.includes(mn) ? mn : s.settings.cmp.find(Boolean);
+    const list = s.settings.cmp.slice(), mn = o.settings.main, j = typeof mn === 'string' ? list.indexOf(mn) : -1;
+    if (j > 0) [list[0], list[j]] = [list[j], list[0]];
+    s.settings.cmp = tidyCmp(list);
+    s.settings.main = s.settings.cmp[0];
   }
   s.updatedAt = typeof o.updatedAt === 'number' ? o.updatedAt : 0;
   return s;
@@ -377,21 +379,37 @@ function benchList() {
   return list;
 }
 const benchById = id => { benchList(); return benchCache.byId.get(id) || null; };
-/* The ones picked for the charts, in their places (a place keeps its colour), and the main one among them. */
-function cmpSlots() {
-  const s = state.settings.cmp.map(id => { const b = id ? benchById(id) : null; return b && b.avail ? b : null; });
-  /* a file can name picks whose data hasn't arrived yet: until it does, the S&P 500 stands in */
-  if (!s.some(Boolean)) s[0] = benchById('SPX');
-  return s;
+/* The picks, in order. The first is the main yardstick, in amber; the next two places have colours of their own and
+   any after them are drawn in gray, behind. A colour stays with its pick: taking one off leaves its place empty, or
+   gives it to the first one in gray, and nobody else's colour changes. Places 1 and 2 stand empty only while
+   nothing is drawn in gray. */
+function tidyCmp(list) {
+  const out = list.slice(0, 3).concat(list.slice(3).filter(Boolean));
+  while (out.length < 3) out.push(null);
+  if (!out[0]) {
+    const k = out.findIndex(Boolean);
+    if (k > 0) { out[0] = out[k]; out[k] = k > 2 ? undefined : null; }
+  }
+  const tidy = out.filter(x => x !== undefined);
+  for (let k = 1; k <= 2; k++) if (!tidy[k] && tidy.length > 3) { tidy[k] = tidy[3]; tidy.splice(3, 1); }
+  return tidy;
 }
+/* the picks as shown: a file can name picks whose data hasn't arrived yet (or that this build doesn't know); they wait
+   out of sight, and if none of the picks is here yet the S&P 500 stands in */
+function shownCmp() {
+  const ids = tidyCmp(state.settings.cmp.map(id => { const b = id ? benchById(id) : null; return b && b.avail ? id : null; }));
+  if (!ids.some(Boolean)) ids[0] = 'SPX';
+  return ids;
+}
+function cmpSlots() { return shownCmp().map(id => id ? benchById(id) : null); }
 function mainBench() {
   const slots = cmpSlots();
   const m = slots.find(b => b && b.id === state.settings.main) || slots.find(Boolean);
   return m || benchById('SPX');
 }
 const slotOf = id => cmpSlots().findIndex(b => b && b.id === id);
-/* series classes: s0, s1, s2 are the three places; the main index keeps its place's colour everywhere */
-const slotCls = id => 's' + Math.max(0, slotOf(id));
+/* series classes: s0 for the main one, s1 and s2 for the next two places, sx (gray) for the rest */
+const slotCls = id => { const i = slotOf(id); return i <= 0 ? 's0' : i <= 2 ? 's' + i : 'sx'; };
 const mainName = () => mainBench().name;
 const theMain = () => { const n = mainName(); return /^(S&P|Nasdaq|Dow)/.test(n) ? 'the ' + n : n; };
 
@@ -683,7 +701,6 @@ function paintHero(read) {
   const M = lastM;
   if (!M || mode === 'welcome') return;
   const fig = $('#hero-fig'), valText = $('#hero-value'), chips = $('#hero-chips'), meta = $('#hero-asof'), stage = $('#hero');
-  const G = gz.G, V = gz.V;
   stage.classList.toggle('reading', !!read);
   fill(chips);
   let text, trend = null;
@@ -696,14 +713,7 @@ function paintHero(read) {
     meta.textContent = fmtDay(read.t);
   } else {
     text = M.hasValue ? money(M.V, { dec: 0 }) : 'No value yet';
-    const c = G && V && M.hasValue && isZoomed(G, V) ? V.cmp : null;
-    const latest = G && G.vals.length ? G.vals[G.vals.length - 1].t : null;
-    if (c && c.problem) chips.append(h('span', { class: 'chg-label' }, 'This period needs saved values inside it to show a change.'));
-    else if (c && !(c.fromStart && c.t1 === latest)) {
-      const label = c.t1 === latest ? 'since ' + fmtDay(c.t0) : c.fromStart ? 'up to ' + fmtDay(c.t1) : fmtDay(c.t0) + ' to ' + fmtDay(c.t1);
-      chips.append(...changeParts(c.gainV, c.retV, label));
-      trend = c.gainV;
-    } else if (M.hasValue && M.gain != null) { chips.append(...changeParts(M.gain, M.roi, 'all time')); trend = M.gain; }
+    if (M.hasValue && M.gain != null) { chips.append(...changeParts(M.gain, M.roi, 'all time')); trend = M.gain; }
     if (M.hasValue) {
       const age = M.today - M.vDay;
       meta.textContent = 'As of ' + fmtDate(state.value.d) + (age > 31 ? ', ' + age + ' days ago' : '');
@@ -712,7 +722,7 @@ function paintHero(read) {
   const none = read ? read.value == null : !M.hasValue;
   valText.textContent = text;
   fig.parentElement.classList.toggle('none', none);
-  /* the light behind the chart follows the result: up or down over what is shown */
+  /* the light behind the chart follows the result: up or down */
   stage.dataset.trend = trend == null ? 'flat' : trend >= 0 ? 'up' : 'down';
   setOdometer(fig, text, { plain: none || hideAmounts, quick: !!read, from: fig._od ? null : 'zero' });
   fitFigure(fig, 30, fig.parentElement);
@@ -908,12 +918,14 @@ function legendItem(cls, label, value, area) {
    o.external: no pointer handling of its own; the caller drives show/hide through the returned api.
    o.tip false: no floating readout; o.onRead(i) is told which sample is being read (-1 when none).
    o.refs: horizontal reference lines [{ value, label, inRange }]. */
+let clipSeq = 0;
 function lineChart(box, o) {
   fill(box);
   const W = Math.max(260, Math.floor(box.clientWidth || 600)), H = o.height;
   let yMax = -Infinity, yMin = Infinity;
   const see = v => { if (v > yMax) yMax = v; if (v < yMin) yMin = v; };
-  for (const s of o.series) for (const p of s.pts) { see(p[1]); if (s.type === 'band') see(p[2]); }
+  /* lines marked context (the gray ones) don't set the scale: they are cut off at the plot's edge instead */
+  for (const s of o.series) if (!s.context) for (const p of s.pts) { see(p[1]); if (s.type === 'band') see(p[2]); }
   for (const r of o.refs || []) if (r.inRange) see(r.value);
   if (!isFinite(yMax)) { yMax = 0; yMin = 0; }
   let lo, hi;
@@ -948,6 +960,12 @@ function lineChart(box, o) {
     svg.append(sv('text', { x: tx, y: H - 8, 'text-anchor': anchor }, t.label));
   }
   const baseY = Y(Math.max(T.lo, Math.min(T.hi, 0)));
+  let clipId = null;
+  const clipped = o.series.some(s => s.context && s.pts.some(p => p[1] > T.hi || p[1] < T.lo));
+  if (clipped) {
+    clipId = 'plot-clip-' + (++clipSeq);
+    svg.append(sv('defs', null, sv('clipPath', { id: clipId }, sv('rect', { x: ml, y: mt, width: Math.max(1, pw), height: Math.max(1, ph) }))));
+  }
   for (const s of o.series) {
     if (!s.pts.length) continue;
     if (s.type === 'band') {
@@ -969,7 +987,7 @@ function lineChart(box, o) {
       else d += 'L' + x + ' ' + y;
     });
     if (s.area) svg.append(sv('path', { d: d + 'V' + baseY.toFixed(1) + 'H' + X(s.pts[0][0]).toFixed(1) + 'Z', class: 'area f-' + s.cls }));
-    svg.append(sv('path', { d, class: 'line s-' + s.cls + (s.thin ? ' thin' : '') + (s.dash ? ' dash' : '') + (s.glow ? ' glow' : '') }));
+    svg.append(sv('path', { d, class: 'line s-' + s.cls + (s.thin ? ' thin' : '') + (s.dash ? ' dash' : '') + (s.glow ? ' glow' : ''), 'clip-path': s.context && clipId ? 'url(#' + clipId + ')' : null }));
     if (s.dots) for (const p of (s.dotPts || s.pts)) svg.append(sv('circle', { cx: X(p[0]).toFixed(1), cy: Y(p[1]).toFixed(1), r: 3.5, class: 'dot f-' + s.cls }));
     if (s.end) { const p = s.endPt || s.pts[s.pts.length - 1]; svg.append(sv('circle', { cx: X(p[0]).toFixed(1), cy: Y(p[1]).toFixed(1), r: 4.5, class: 'dot end f-' + s.cls })); }
   }
@@ -1037,7 +1055,7 @@ function lineChart(box, o) {
   };
   box.onblur = hide;
   return {
-    show: i => { if (o.samples.length) show(i); }, hide, idxAt,
+    clipped, show: i => { if (o.samples.length) show(i); }, hide, idxAt,
     /* the plot area in page pixels, for turning finger positions into dates */
     plot: () => { const r = svg.getBoundingClientRect(), k = r.width / W; return { left: r.left + ml * k, width: Math.max(1, pw * k) }; }
   };
@@ -1231,11 +1249,15 @@ function drawGrowth(play) {
   const main = mainBench();
   const V = windowSeries(G, M.deps, main.A, w.a, w.b);
   gz.V = V;
-  /* The other picks are sampled on the same days, so their points line up with the main one's by position. */
-  const picks = [{ b: main, pts: V.pts }].concat(cmpSlots().filter(b => b && b.id !== main.id)
-    .map(b => ({ b, pts: windowSeries(Object.assign({}, G, { spOK: G.start >= b.startT }), M.deps, b.A, w.a, w.b).pts })));
-  picks.sort((x, y) => slotOf(x.b.id) - slotOf(y.b.id));
-  const lines = picks.map(x => ({ b: x.b, cls: slotCls(x.b.id), at: new Map(x.pts.map(p => [p.t, p.sp])), pts: x.pts.filter(p => p.sp != null).map(p => [p.t, p.sp]) })).filter(x => x.pts.length);
+  /* Every pick, sampled on the same days as the main one. The main one and the next two have colours; any more are
+     drawn in gray behind them. Each line is fixed from the start: the window only chooses what to show. */
+  const joins = [];
+  const lines = cmpSlots().filter(Boolean).map(b => {
+    const S = b.id === main.id ? V : windowSeries(Object.assign({}, G, { spOK: G.start >= b.startT }), M.deps, b.A, w.a, w.b);
+    if (S.join) joins.push({ b, t: S.join.t });
+    return { b, cls: slotCls(b.id), at: new Map(S.pts.map(p => [p.t, p.sp])), pts: S.pts.filter(p => p.sp != null).map(p => [p.t, p.sp]) };
+  }).filter(x => x.pts.length);
+  const bright = lines.filter(l => l.cls !== 'sx'), gray = lines.filter(l => l.cls === 'sx');
   const plot = $('#growth-plot');
   const lastReal = V.vin.length ? V.vin[V.vin.length - 1] : null;
   /* A value for every day would make a scribble: draw the last of each week or month instead (whichever fits),
@@ -1249,7 +1271,8 @@ function drawGrowth(play) {
   }
   const series = [{ cls: 'dep', type: 'step', area: true, pts: V.pts.map(p => [p.t, p.dep]) }];
   if (vline.length > 1) series.push({ cls: 'value', type: 'wedge', pts: wedgePath(vline, V.pts) });
-  for (const l of lines) series.push({ cls: l.cls, type: 'line', thin: true, end: true, pts: l.pts });
+  for (const l of gray) series.push({ cls: 'sx', type: 'line', thin: true, context: true, pts: l.pts });
+  for (const l of bright.slice().reverse()) series.push({ cls: l.cls, type: 'line', thin: true, end: true, pts: l.pts });
   if (vline.length) series.push({ cls: 'value', type: 'line', glow: true, pts: vline, dots: drawn.length <= 14, dotPts: drawn.map(v => [v.t, v.a]), end: !!lastReal, endPt: lastReal ? [lastReal.t, lastReal.a] : null });
   const valBy = new Map(V.vin.map(v => [v.t, v.a]));
   /* Reading the chart stops at your own values (the points on the line), so every stop shows your portfolio
@@ -1261,14 +1284,21 @@ function drawGrowth(play) {
   const paintLegend = p => {
     const youV = p ? (valBy.has(p.t) ? valBy.get(p.t) : null) : lastReal ? lastReal.a : null;
     const box = $('#growth-legend'), depV = (p || lastP).dep;
-    const bm = lines.map(l => ({ l, v: p ? l.at.get(p.t) : l.pts[l.pts.length - 1][1] }));
+    const bm = bright.map(l => ({ l, v: p ? l.at.get(p.t) : l.pts[l.pts.length - 1][1] }));
     /* the figures share a row: when full amounts won't fit a narrow phone, they all go short (12.3M) */
     let fmt = v => (v == null ? '—' : money(v, { dec: 0 }));
     const colW = ((box.clientWidth || 340) - 24) / 3;
     if (!isWide() && [youV, depV].concat(bm.map(x => x.v)).some(v => textW(fmt(v), 16) * 1.12 > colW)) fmt = v => (v == null ? '—' : money(v, { compact: true }));
+    /* the ones in gray, together: how many of them you are above, at the point being read */
+    let rest = null;
+    if (gray.length) {
+      const vs = gray.map(l => (p ? l.at.get(p.t) : l.pts[l.pts.length - 1][1])).filter(v => v != null);
+      rest = legendItem('sx', gray.length + ' more', youV == null || !vs.length ? '—' : hideAmounts ? '•••' : 'ahead of ' + vs.filter(v => youV >= v).length);
+    }
     fill(box,
       vline.length ? legendItem('value', 'You', fmt(youV)) : null,
       ...bm.map(x => legendItem(x.l.cls, x.l.b.short || x.l.b.name, fmt(x.v))),
+      rest,
       legendItem('dep', 'Deposited', fmt(depV), true));
   };
   gz.api = lineChart(plot, {
@@ -1277,7 +1307,7 @@ function drawGrowth(play) {
     series, yFmt: yMoney, samples: stops,
     focus: i => {
       const p = ptBy.get(stops[i]), f = [{ cls: 'dep', x: p.t, y: p.dep }];
-      for (const l of lines) { const v = l.at.get(p.t); if (v != null) f.push({ cls: l.cls, x: p.t, y: v }); }
+      for (const l of bright) { const v = l.at.get(p.t); if (v != null) f.push({ cls: l.cls, x: p.t, y: v }); }
       if (valBy.has(p.t)) f.push({ cls: 'value', x: p.t, y: valBy.get(p.t) });
       return f;
     },
@@ -1287,16 +1317,19 @@ function drawGrowth(play) {
       paintHero(p ? { t: p.t, value: valBy.has(p.t) ? valBy.get(p.t) : null, dep: p.dep } : null);
     },
     label: 'Line chart' + (zoomed ? ' from ' + fmtDay(w.a) + ' to ' + fmtDay(w.b) : '') + ': money deposited, your portfolio value, and ' +
-      (V.rebased ? lines.map(l => l.b.name).join(', ') + ' starting from your value on ' + fmtDay(V.cmp.t0) : 'the same deposits in ' + (lines.map(l => l.b.name).join(', ') || 'an index')) + ', over time'
+      'the same deposits in ' + (lines.map(l => l.b.name).join(', ') || 'an index') + ', over time'
   });
   $('#growth-chart').classList.toggle('zoomed', zoomed);
   $('#growth-nav').hidden = !zoomable;
   if (zoomable) navLayout(G, w);
   renderPresets(G, zoomable);
   const names = lines.map(l => l.b.short || l.b.name);
-  const spNote = lines.length && !V.rebased ? (names.length > 1 ? 'The other lines: ' : names[0] + ': ') + 'your deposits, put into ' + (names.length > 1 ? 'each one' : 'it') + ' on the same days. ' : '';
-  $('#growth-window').textContent = zoomed ? fmtDay(w.a) + ' to ' + fmtDay(w.b) + ' (' + spanText(w.b - w.a) + ')'
-    : spNote + (zoomable ? 'Pinch the chart or drag the handles for a shorter period.' : '');
+  const spNote = lines.length ? (names.length > 1 ? 'The other lines: ' : names[0] + ': ') + 'your deposits, put into ' + (names.length > 1 ? 'each one' : 'it') + ' on the same days. ' +
+    (gray.length ? 'The ' + gray.length + ' in gray: ' + gray.map(l => l.b.short || l.b.name).join(', ') + '. ' : '') +
+    joins.map(j => (j.b.short || j.b.name) + '’s data starts later, so its line joins level with you on ' + fmtDay(j.t) + '. ').join('') : '';
+  const cut = gz.api && gz.api.clipped ? ' A gray line that runs past the edge is cut off there.' : '';
+  $('#growth-window').textContent = (zoomed ? fmtDay(w.a) + ' to ' + fmtDay(w.b) + ' (' + spanText(w.b - w.a) + ').' + cut
+    : spNote + (zoomable ? 'Pinch the chart or drag the handles to look closer.' : '') + cut).trim();
   renderCompare(V, zoomed);
   paintLegend(null);
   paintHero(null);
@@ -1330,33 +1363,29 @@ function renderCompare(V, zoomed) {
   const box = $('#growth-compare');
   if (!zoomed) { box.hidden = true; fill(box); return; }
   box.hidden = false;
-  const c = V.cmp;
+  const c = V.cmp, mb = mainBench(), nm = theMain();
   const addLink = () => (mode === 'example' ? null : h('button', { type: 'button', class: 'link', 'data-action': 'open-import', 'data-target': 'values' }, 'Add many values'));
   if (c.problem) {
-    const mb = mainBench(), nm = theMain();
-    const msg = c.problem === 'nosp' ? 'The data for ' + nm + ' starts in ' + dfMonthYear.format(new Date(mb.startT * DAY_MS)) + ', so this period can’t be compared with it.'
-      : c.fromStart ? 'To compare this period with ' + nm + ', the app needs your portfolio value on a date inside it.'
-        : 'To compare this period with ' + nm + ', the app needs your portfolio value on at least two dates inside it.';
+    const msg = c.problem === 'nosp' ? 'The data for ' + nm + ' starts in ' + dfMonthYear.format(new Date(mb.startT * DAY_MS)) + ', after this stretch.'
+      : 'To compare this stretch with ' + nm + ', the app needs your portfolio value on ' + (c.problem === 'novalue' ? 'two dates' : 'at least one more date') + ' inside it.';
     fill(box, h('p', { class: 'note' }, msg + ' ', c.problem === 'nosp' ? null : addLink()));
     return;
   }
-  const row = (cls, name, gain, ret) => h('tr', null,
-    h('td', null, h('i', { class: 'key key-' + cls }), name),
-    h('td', null, money(gain, { sign: true, dec: 0 })),
-    h('td', null, ret != null ? pct(ret) : '—'));
-  const ahead = c.diff >= 0;
-  const flows = Math.abs(c.net) < 0.005 ? 'with no deposits in between' : c.net > 0 ? 'then get the same ' + money(c.net, { dec: 0 }) + ' of deposits' : 'then have the same ' + money(-c.net, { dec: 0 }) + ' taken out';
+  const row = (key, name, x0, x1) => h('tr', null, h('td', null, key, name), h('td', null, money(x0, { dec: 0 })), h('td', null, money(x1, { dec: 0 })));
+  const up = c.gained >= 0;
   fill(box,
-    h('p', { class: 'cmp-title' }, (c.fromStart ? 'Your first deposit, ' + fmtDay(c.t0) : fmtDay(c.t0)) + ' to ' + fmtDay(c.t1)),
+    h('p', { class: 'cmp-title' }, fmtDay(c.t0) + ' to ' + fmtDay(c.t1)),
     h('div', { class: 'table-scroll' }, h('table', { class: 'num-table cmp-table' },
-      h('thead', null, h('tr', null, h('th', { scope: 'col' }, h('span', { class: 'sr-only' }, 'Investment')), h('th', { scope: 'col' }, 'Gain'), h('th', { scope: 'col' }, 'Return'))),
-      h('tbody', null, row('value', 'Your portfolio', c.gainV, c.retV), row(slotCls(mainBench().id), mainName(), c.gainS, c.retS)))),
+      h('thead', null, h('tr', null, h('th', { scope: 'col' }, h('span', { class: 'sr-only' }, 'Line')), h('th', { scope: 'col' }, 'Start'), h('th', { scope: 'col' }, 'End'))),
+      h('tbody', null,
+        row(h('i', { class: 'key key-value' }), 'You', c.you0, c.you1),
+        row(h('i', { class: 'key key-' + slotCls(mb.id) }), mb.short || mb.name, c.sp0, c.sp1),
+        row(h('i', { class: 'area-key' }), 'Deposited', c.dep0, c.dep1)))),
     h('p', { class: 'verdict' },
-      h('span', { class: 'pill ' + (ahead ? 'pill-good' : 'pill-bad') }, h('span', { 'aria-hidden': 'true' }, ahead ? '▲' : '▼'),
-        money(Math.abs(c.diff), { dec: 0 }) + (ahead ? ' ahead of ' : ' behind ') + theMain())),
-    h('p', { class: 'fine' }, c.fromStart
-      ? 'Gains after deposits. The other side gets the same deposits on the same days. Return counts each deposit from the day it went in.'
-      : 'Gains after deposits. Both start from your ' + money(c.V0, { dec: 0 }) + ' on ' + fmtDay(c.t0) + ' and ' + flows + '. Return counts each deposit from the day it went in.'));
+      h('span', { class: 'pill ' + (up ? 'pill-good' : 'pill-bad') }, h('span', { 'aria-hidden': 'true' }, up ? '▲' : '▼'),
+        money(Math.abs(c.gained), { dec: 0 }) + (up ? ' gained on ' : ' lost to ') + nm)),
+    h('p', { class: 'fine' }, 'Read off the lines above, which stay as they are when you zoom. The gap between you and ' + nm + ' went from ' +
+      money(c.gap0, { sign: true, dec: 0 }) + ' to ' + money(c.gap1, { sign: true, dec: 0 }) + '; you both had the same deposits in between, so the change is what each made of the money.'));
 }
 
 function growthTable(G) {
@@ -1839,9 +1868,12 @@ function renderPerformance(M) {
 /* What you're comparing with, as chips; tapping opens the list to choose from. */
 function renderCmpBar() {
   const main = mainBench(), waiting = !BENCH_DATA.series.length;
+  const on = cmpSlots().filter(Boolean), more = on.filter(b => slotCls(b.id) === 'sx');
   fill($('#cmp-bar'), h('span', { class: 'cmp-label' }, 'Against'),
-    ...cmpSlots().filter(Boolean).map(b => h('button', { type: 'button', class: 'cmp-chip', 'data-action': 'open-picker', 'aria-label': 'Compared with ' + b.name + (b.id === main.id ? ', the main one' : '') + '. Change' },
-      h('i', { class: 'dot-key key-' + slotCls(b.id) }), b.short || b.name, b.id === main.id && cmpSlots().filter(Boolean).length > 1 ? h('span', { class: 'star', 'aria-hidden': 'true' }, '★') : null)),
+    ...on.filter(b => slotCls(b.id) !== 'sx').map(b => h('button', { type: 'button', class: 'cmp-chip', 'data-action': 'open-picker', 'aria-label': 'Compared with ' + b.name + (b.id === main.id ? ', the main one' : '') + '. Change' },
+      h('i', { class: 'dot-key key-' + slotCls(b.id) }), b.short || b.name, b.id === main.id && on.length > 1 ? h('span', { class: 'star', 'aria-hidden': 'true' }, '★') : null)),
+    more.length ? h('button', { type: 'button', class: 'cmp-chip', 'data-action': 'open-picker', 'aria-label': 'And ' + more.map(b => b.name).join(', ') + ', in gray. Change' },
+      h('i', { class: 'dot-key key-sx' }), '+' + more.length + ' more') : null,
     h('button', { type: 'button', class: 'cmp-chip add', 'data-action': 'open-picker' }, waiting ? (PWA ? 'More on the way' : 'More in the installed app') : 'Change'));
 }
 
@@ -1930,17 +1962,28 @@ function renderPerfChart(P, periods, picks) {
     const per = x.row.periods.find(r => r.k === perf.preset);
     return { b: x.b, cls: x.cls, pts, by: new Map(pts), total: b0 != null && per ? per.sp : null };
   }).filter(l => l.pts.length > 1);
-  fill($('#perf-legend'), legendItem('value', 'You', pct(row.you)), ...lines.map(l => legendItem(l.cls, l.b.short || l.b.name, l.total != null ? pct(l.total) : null)));
-  lineChart(box, {
+  const bright = lines.filter(l => l.cls !== 'sx'), gray = lines.filter(l => l.cls === 'sx');
+  const beaten = (you, vals) => vals.filter(v => v != null && you >= v).length;
+  const rest = gray.length ? legendItem('sx', gray.length + ' more', 'ahead of ' + beaten(row.you, gray.map(l => l.total))) : null;
+  fill($('#perf-legend'), legendItem('value', 'You', pct(row.you)), ...bright.map(l => legendItem(l.cls, l.b.short || l.b.name, l.total != null ? pct(l.total) : null)), rest);
+  const api = lineChart(box, {
     height: isWide() ? 290 : 226, x0: base.t, x1: P.t1, xTicks: timeTicks(base.t, P.t1, box.clientWidth || 600), animate: plays('perf'),
-    series: lines.map(l => ({ cls: l.cls, type: 'line', thin: true, end: true, pts: l.pts })).concat([{ cls: 'value', type: 'line', end: true, dots: you.length <= 14, pts: you }]),
+    series: gray.map(l => ({ cls: 'sx', type: 'line', thin: true, context: true, pts: l.pts }))
+      .concat(bright.slice().reverse().map(l => ({ cls: l.cls, type: 'line', thin: true, end: true, pts: l.pts })))
+      .concat([{ cls: 'value', type: 'line', end: true, dots: you.length <= 14, pts: you }]),
     yFmt: v => pct(v, { dec: 0 }), samples: drawn.map(p => p.t),
-    readout: i => ({ title: fmtDay(drawn[i].t), rows: [{ cls: 'value', value: pct(you[i][1]), label: 'You' }].concat(lines.filter(l => l.by.has(drawn[i].t)).map(l => ({ cls: l.cls, value: pct(l.by.get(drawn[i].t)), label: l.b.short || l.b.name }))) }),
-    focus: i => [{ cls: 'value', x: you[i][0], y: you[i][1] }].concat(lines.filter(l => l.by.has(drawn[i].t)).map(l => ({ cls: l.cls, x: drawn[i].t, y: l.by.get(drawn[i].t) }))),
+    readout: i => {
+      const t = drawn[i].t, inGray = gray.filter(l => l.by.has(t));
+      return { title: fmtDay(t), rows: [{ cls: 'value', value: pct(you[i][1]), label: 'You' }]
+        .concat(bright.filter(l => l.by.has(t)).map(l => ({ cls: l.cls, value: pct(l.by.get(t)), label: l.b.short || l.b.name })))
+        .concat(inGray.length ? [{ cls: 'sx', value: 'ahead of ' + beaten(you[i][1], inGray.map(l => l.by.get(t))), label: inGray.length + ' more' }] : []) };
+    },
+    focus: i => [{ cls: 'value', x: you[i][0], y: you[i][1] }].concat(bright.filter(l => l.by.has(drawn[i].t)).map(l => ({ cls: l.cls, x: drawn[i].t, y: l.by.get(drawn[i].t) }))),
     label: 'Line chart: your return since ' + fmtDay(base.t) + (lines.length ? ' against ' + lines.map(l => l.b.name).join(', ') : '')
   });
   $('#perf-fine').textContent = 'Total return since ' + fmtDay(base.t) + ', dividends reinvested. Between your saved values the lines run straight, because what happened in between isn’t known.' +
     (lines.some(l => l.total == null) ? ' A line that starts later begins level with you on the day its data starts.' : '') +
+    (api.clipped ? ' The scale follows you and the coloured lines, so a gray line that runs past the edge is cut off there; the table has its figures.' : '') +
     (picks.length ? ' In the tables, a filled dot marks where you came out ahead and a ring where you were behind.' : '');
 }
 
@@ -2465,7 +2508,7 @@ function buildWorkbook(st, M, template) {
     [S('Plan: years ahead'), st.settings.plan ? st.settings.plan.years : ''],
     [S('Plan: deposits per year'), st.settings.plan && st.settings.plan.annual != null ? S(st.settings.plan.annual, 'money') : ''],
     [S('Plan: return per year'), st.settings.plan ? S(st.settings.plan.rate, 'percent') : ''],
-    [S('Compare with'), st.settings.cmp.map(id => id || '-').join(',')],
+    [S('Compare with'), st.settings.cmp.map(id => id || '-').join(',').replace(/(,-)+$/, '')],
     [S('Main comparison'), st.settings.main || ''],
     [],
     [S('File format'), FORMAT_MARK],
@@ -2963,7 +3006,7 @@ const dlgPicker = $('#dlg-picker');
 let pickChanged = false;
 function pickSay(msg) {
   const el = $('#pick-note');
-  el.textContent = msg || 'Choose up to three. The starred one is your main yardstick: the health check and the headline comparison use it.';
+  el.textContent = msg || 'Choose as many as you like. The starred one is your main yardstick, in amber: the health check and the headline comparison use it. The next two have colours of their own; any more are drawn in gray behind them.';
   el.classList.toggle('warn', !!msg);
   if (msg) anim(el, [{ transform: 'translateX(0)' }, { transform: 'translateX(-5px)' }, { transform: 'translateX(4px)' }, { transform: 'translateX(0)' }], { duration: 260, fill: 'none', easing: 'ease-out' });
 }
@@ -2987,7 +3030,10 @@ function renderPicker() {
             h('span', { 'aria-hidden': 'true' }, '★'), isMain ? 'Main' : null) : null);
       })));
   }
-  fill($('#pick-list'), ...groups);
+  const avail = list.filter(b => b.avail);
+  fill($('#pick-list'), avail.length > 1 ? h('div', { class: 'pick-quick' },
+    h('button', { type: 'button', class: 'link', 'data-action': 'pick-all', disabled: on.length >= avail.length ? '' : null }, 'Pick all ' + avail.length),
+    h('button', { type: 'button', class: 'link', 'data-action': 'pick-main-only', disabled: on.length <= 1 ? '' : null }, 'Just ' + (main.short || main.name))) : null, ...groups);
   const waiting = list.some(b => !b.avail);
   $('#pick-fine').textContent = 'Funds stand in for the indexes they follow, with dividends reinvested, in US dollars. ' +
     (!waiting ? '' : PWA ? 'The ones marked “On the way” arrive with the app’s daily data update. ' : 'This preview carries the S&P 500 only: the others come with the installed app’s daily data update. ') + 'The app itself never contacts a price service.';
@@ -2996,16 +3042,21 @@ function togglePick(id) {
   const b = benchById(id);
   if (!b) return;
   if (!b.avail) { pickSay(PWA ? b.name + ' hasn’t arrived yet. It comes with the app’s daily data update.' : b.name + ' comes with the installed app’s daily data update.'); return; }
-  const slots = cmpSlots(), i = slots.findIndex(x => x && x.id === id), n = slots.filter(Boolean).length;
-  if (i >= 0 && n === 1) { pickSay('Keep at least one to compare with.'); return; }
-  if (i < 0 && n >= 3) { pickSay('Three at a time. Take one off to add ' + b.name + '.'); return; }
-  pickChanged = true; pickSay('');
-  commitSettings(s => {
-    const next = slots.map(x => (x ? x.id : null));
-    if (i >= 0) next[i] = null; else next[next.indexOf(null)] = id;
-    s.settings.cmp = next;
-    if (!next.includes(s.settings.main)) s.settings.main = next.find(Boolean);
+  const on = cmpSlots().filter(Boolean), picked = on.some(x => x.id === id);
+  if (picked && on.length === 1) { pickSay('Keep at least one to compare with.'); return; }
+  setPicks(l => {
+    const j = l.indexOf(id);
+    if (j >= 0) { if (j <= 2) l[j] = null; else l.splice(j, 1); }
+    else { const k = l.indexOf(null); if (k >= 0 && k <= 2) l[k] = id; else l.push(id); }
+    return l;
   });
+}
+/* every change to the picks goes through here, so the list always keeps its shape: the main one first. A change starts
+   from the picks as shown, so what you see is what is kept (a stand-in S&P 500 stays when you add another). */
+function setPicks(change) {
+  pickChanged = true; pickSay('');
+  const shown = shownCmp();
+  commitSettings(s => { s.settings.cmp = tidyCmp(change(shown.slice())); s.settings.main = s.settings.cmp[0]; });
 }
 /* the charts behind the sheet redraw with the new lines once it is out of the way */
 dlgPicker.addEventListener('close', () => { if (pickChanged) { pickChanged = false; fresh.add('tab'); render(); } });
@@ -3094,9 +3145,14 @@ const actions = {
   'pick-main': btn => {
     const id = btn.dataset.id;
     if (mainBench().id === id || slotOf(id) < 0) return;
-    pickChanged = true; pickSay('');
-    commitSettings(s => { s.settings.main = id; });
+    /* the new main one takes first place (and amber); the old one takes its place and colour */
+    setPicks(l => { const j = l.indexOf(id); if (j > 0) [l[0], l[j]] = [l[j], l[0]]; return l; });
   },
+  'pick-all': () => setPicks(l => {
+    for (const b of benchList()) if (b.avail && !l.includes(b.id)) { const k = l.indexOf(null); if (k >= 0 && k <= 2) l[k] = b.id; else l.push(b.id); }
+    return l;
+  }),
+  'pick-main-only': () => setPicks(l => [l[0]]),
   'go-deposits': () => setTab('deposits'),
   'open-value': () => {
     if (mode === 'welcome' || mode === 'example') return;
