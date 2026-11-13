@@ -1,4 +1,4 @@
-/* build 2026-11-13.1 */
+/* build 2026-11-13.2 */
 /* app.js: the Investment Tracker interface. Loads after spx-data.js, calc.js and xlsx.js.
    Data lives in the Excel file you open. Nothing is sent anywhere, and nothing is stored
    unless you turn on "Keep a copy on this device". */
@@ -2661,6 +2661,14 @@ function setImportTab(tabName) {
 function importOpts() {
   return { fmt: imp.fmt, localeFmt: LOCALE_DATE_FMT, localeDecimalComma: LOCALE_DECIMAL_COMMA, dateCol: imp.dateCol, amountCol: imp.amountCol, delim: imp.delim, want: imp.target, today: todayIso() };
 }
+/* what to say when no column reads as dates: a file can't have left its dates behind, a paste can */
+function noDateMsg(open) {
+  if (open) return 'I couldn’t find a column of dates on this sheet. Pick another sheet above, if there is one.';
+  const many = imp.tab === 'file' && imp.src && imp.src.kind === 'sheets' && imp.src.sheets.length > 1;
+  return imp.tab === 'file'
+    ? 'I couldn’t find a column of dates in this file' + (many ? ' on this sheet' : '') + '. Dates can look like 27/12/2023, 2023-12-27 or 20231227.'
+    : 'I couldn’t find a column of dates. Check that the date column came along when you copied.';
+}
 function analyzeImport() {
   if (imp.tab === 'paste') {
     const text = $('#imp-text').value;
@@ -2733,7 +2741,7 @@ function renderImportPreview() {
     else if (!r.dates.length) pv.append(h('p', { class: 'field-error' }, 'The last date needs to be on or after the first.'));
   }
   if (r.problem && !r.recurring) {
-    const msg = { empty: 'Nothing to read yet.', nodate: 'I couldn’t find a column of dates' + (imp.mode === 'open' ? ' on this sheet. Pick another sheet above, if there is one.' : '. Check that the date column came along when you copied.'), noamount: 'I found dates but no column of amounts next to them.', broker: 'This looks like a broker export, but it has no deposits section to read. To add your portfolio values from it, use Add many values on the Overview tab.' }[r.problem];
+    const msg = { empty: 'Nothing to read yet.', nodate: noDateMsg(imp.mode === 'open'), noamount: 'I found dates but no column of amounts next to them.', broker: 'This looks like a broker export, but it has no deposits section to read. To add your portfolio values from it, use Add many values on the Overview tab.' }[r.problem];
     pv.append(h('p', { class: 'field-error' }, msg));
   }
   const existing = new Set(replace || mode !== 'data' ? [] : state.deposits.map(d => d.d + '|' + d.a.toFixed(2)));
@@ -2796,7 +2804,7 @@ function renderValuesPreview() {
   const r = imp.res;
   if (!r) return;
   if (r.problem) {
-    pv.append(h('p', { class: 'field-error' }, { empty: 'Nothing to read yet.', nodate: 'I couldn’t find a column of dates. Check that the date column came along when you copied.', noamount: 'I found dates but no column of values next to them.',
+    pv.append(h('p', { class: 'field-error' }, { empty: 'Nothing to read yet.', nodate: noDateMsg(false), noamount: 'I found dates but no column of values next to them.',
       broker: 'This looks like a broker export, but I couldn’t find a section with a date and a NAV or total value column in it' + (r.broker && r.broker.sections.length ? ' (it has ' + r.broker.sections.slice(0, 6).map(s => '“' + s + '”').join(', ') + ')' : '') + '.' }[r.problem]));
     return;
   }

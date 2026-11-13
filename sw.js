@@ -2,7 +2,7 @@
    It only ever fetches files from this same site, and it never sees your Excel file or numbers.
    spx-data.js and bench-data.js are fetched fresh from this site when online (the daily job
    updates them), with the saved copies used offline. When you change any other app file, change VERSION. */
-const VERSION = '2026-11-13.1';
+const VERSION = '2026-11-13.2';
 const CACHE = 'investment-tracker-' + VERSION;
 /* The app can't run without these. */
 const FILES = ['./', 'index.html', 'styles.css', 'spx-data.js', 'bench-data.js', 'calc.js', 'xlsx.js', 'app.js'];

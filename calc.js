@@ -1,4 +1,4 @@
-/* build 2026-11-13.1 */
+/* build 2026-11-13.2 */
 /* calc.js: dates, returns (CAGR, XIRR), the S&P 500 comparison, and reading pasted or
    uploaded tables. No network, no storage; plain functions only. */
 const DAY_MS = 86400000;
@@ -564,7 +564,14 @@ function dateParts(raw) {
     const t = new Date(raw.getTime() + 43200000);
     return { kind: 'date', y: t.getFullYear(), m: t.getMonth() + 1, d: t.getDate() };
   }
-  if (raw == null || typeof raw === 'number' || typeof raw === 'boolean') return null;
+  if (typeof raw === 'number') {
+    /* 20231227 as a plain number: a broker's date once Excel has opened the export (it keeps them as numbers, in General
+       format). Only a whole number that is a real calendar date counts, so an amount like 12345678 stays an amount. */
+    if (!Number.isInteger(raw) || raw < 19000101 || raw > 21001231) return null;
+    const y = Math.floor(raw / 10000), mo = Math.floor(raw / 100) % 100, d = raw % 100;
+    return ymdToIso(y, mo, d) ? { kind: 'iso', y, m: mo, d } : null;
+  }
+  if (raw == null || typeof raw === 'boolean') return null;
   let s = String(raw).trim();
   if (!s || s.length > 40) return null;
   s = s.replace(/^(mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?,?\s+/i, '');
